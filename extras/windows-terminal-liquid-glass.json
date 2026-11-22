@@ -1,0 +1,36 @@
+{
+    "_comment": "Paste the scheme into the \"schemes\" array of Windows Terminal settings.json, and the profile keys into \"profiles\" > \"defaults\".",
+    "scheme": {
+        "name": "Liquid Glass",
+        "background": "#091717",
+        "foreground": "#E4EFEC",
+        "cursorColor": "#1FB8CD",
+        "selectionBackground": "#2E565E",
+        "black": "#13343B",
+        "red": "#E07A7A",
+        "green": "#5CC9A7",
+        "yellow": "#E6C47A",
+        "blue": "#1FB8CD",
+        "purple": "#9A8CE0",
+        "cyan": "#20808D",
+        "white": "#BADEDD",
+        "brightBlack": "#46666C",
+        "brightRed": "#F0A0A0",
+        "brightGreen": "#8FE0C4",
+        "brightYellow": "#F2D9A0",
+        "brightBlue": "#7CD2DE",
+        "brightPurple": "#BEB4F0",
+        "brightCyan": "#5FC4CF",
+        "brightWhite": "#FBFAF4"
+    },
+    "profileDefaults": {
+        "colorScheme": "Liquid Glass",
+        "useAcrylic": true,
+        "opacity": 78,
+        "backgroundImage": "%USERPROFILE%\\Pictures\\LiquidGlass\\liquid-glass-depth.jpg",
+        "backgroundImageOpacity": 0.18,
+        "backgroundImageStretchMode": "uniformToFill",
+        "padding": "14",
+        "font": { "face": "Cascadia Code", "size": 11 }
+    }
+}
