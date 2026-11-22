@@ -6,14 +6,14 @@
     powershell -ExecutionPolicy Bypass -File .\Restore-Windows.ps1
 #>
 $ErrorActionPreference = 'Stop'
-$backupFile = Join-Path $env:LOCALAPPDATA 'LiquidGlass\backup.json'
+$backupFile = Join-Path $env:LOCALAPPDATA 'LiquidGlass\backup.xml'
 
 if (-not (Test-Path $backupFile)) {
     Write-Host "No backup found at $backupFile - nothing to restore." -ForegroundColor Yellow
     exit 1
 }
 
-$entries = Get-Content $backupFile -Raw | ConvertFrom-Json
+$entries = @(Import-Clixml -Path $backupFile)
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
     [Security.Principal.WindowsBuiltInRole]::Administrator)
 $skipped = 0

@@ -43,7 +43,7 @@ Options:
 What it changes: apps in dark mode, Start menu and taskbar dark, transparency on, a
 turquoise accent palette (`#20808D` with lighter and darker shades), translucent title
 bars (no solid accent color), and wallpaper set to Fill. Every value it changes is backed
-up to `%LOCALAPPDATA%\LiquidGlass\backup.json` first.
+up to `%LOCALAPPDATA%\LiquidGlass\backup.xml` first.
 
 ## 2. Make the glass stronger (optional apps)
 

@@ -10,7 +10,7 @@
     - Optional: installs TranslucentTB, Windhawk and Mica For Everyone via winget
 
     Every registry value it touches is backed up first to
-    %LOCALAPPDATA%\LiquidGlass\backup.json so Restore-Windows.ps1 can undo it.
+    %LOCALAPPDATA%\LiquidGlass\backup.xml so Restore-Windows.ps1 can undo it.
 
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File .\Apply-LiquidGlass.ps1
@@ -39,7 +39,7 @@ if (-not $Wallpaper) { $Wallpaper = if ($Theme -eq 'Light') { 'paper' } else { '
 # Paths
 $stateDir  = Join-Path $env:LOCALAPPDATA 'LiquidGlass'
 $wallDir   = Join-Path ([Environment]::GetFolderPath('MyPictures')) 'LiquidGlass'
-$backupFile = Join-Path $stateDir 'backup.json'
+$backupFile = Join-Path $stateDir 'backup.xml'
 New-Item -ItemType Directory -Force -Path $stateDir, $wallDir | Out-Null
 
 Write-Host ''
@@ -52,7 +52,7 @@ $backup = New-Object System.Collections.Generic.List[object]
 if (Test-Path $backupFile) {
     # Re-run: keep the ORIGINAL values, only add settings that were never backed up.
     Write-Host '  Existing backup found - keeping your original settings.' -ForegroundColor DarkGray
-    foreach ($e in @(Get-Content $backupFile -Raw | ConvertFrom-Json)) { $backup.Add($e) }
+    foreach ($e in @(Import-Clixml -Path $backupFile)) { $backup.Add($e) }
 }
 
 function Set-Reg {
@@ -156,7 +156,9 @@ if ($SkipLockScreen) {
 }
 
 # Save backup
-ConvertTo-Json -InputObject @($backup) -Depth 4 | Set-Content -Path $backupFile -Encoding UTF8
+# Export-Clixml, not ConvertTo-Json: Windows PowerShell 5.1's JSON writer throws
+# "Argument types do not match" on these objects.
+$backup.ToArray() | Export-Clixml -Path $backupFile
 Write-Host "  Backup of your previous settings: $backupFile" -ForegroundColor DarkGray
 
 # Optional glass apps
