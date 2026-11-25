@@ -48,7 +48,8 @@ public:
 		                                    mReq.fps <= 30 ? CHIAKI_VIDEO_FPS_PRESET_30 : CHIAKI_VIDEO_FPS_PRESET_60);
 		if (mReq.bitrateKbps > 0)
 			ci.video_profile.bitrate = unsigned(mReq.bitrateKbps);
-		ci.video_profile.codec = (mReq.hevc && mConsole.ps5) ? CHIAKI_CODEC_H265 : CHIAKI_CODEC_H264;
+		// H.264 for the lowest-latency WebRTC path; HDR needs the PS5's 10-bit HEVC.
+		ci.video_profile.codec = (mReq.hdr && mConsole.ps5) ? CHIAKI_CODEC_H265_HDR : CHIAKI_CODEC_H264;
 		ci.video_profile_auto_downgrade = true;
 		ci.enable_keyboard = false;
 		// Present a DualShock-style pad: the console then sends plain rumble, which a
@@ -84,7 +85,7 @@ public:
 		chiaki_controller_state_set_idle(&idle);
 		chiaki_session_set_controller_state(&mSession, &idle);
 
-		mHub.setSource(this, ci.video_profile.codec != CHIAKI_CODEC_H264);
+		mHub.setSource(this, ci.video_profile.codec != CHIAKI_CODEC_H264, ci.video_profile.codec == CHIAKI_CODEC_H265_HDR);
 		e = chiaki_session_start(&mSession);
 		if (e != CHIAKI_ERR_SUCCESS) {
 			mHub.clearSource(this);
@@ -279,7 +280,7 @@ void SessionManager::worker(StreamRequest req, ConsoleRecord console) {
 
 	std::unique_ptr<SourceBase> source;
 	if (console.id == "test-pattern") {
-		source = makeFakeSource(*this, mHub, mFakeVideoPath, req.fps);
+		source = makeFakeSource(*this, mHub, mFakeVideoPath, req.fps, req.hdr);
 	} else {
 		// Wake the console if it is asleep and wait for it to report ready.
 		auto findState = [&]() -> std::string {
@@ -426,7 +427,7 @@ json SessionManager::status() {
 	          {"console_id", mRequest.consoleId},
 	          {"console_name", mConsoleName},
 	          {"since_ms", nowMs() - mStateSinceMs},
-	          {"request", {{"height", mRequest.height}, {"fps", mRequest.fps}, {"bitrate_kbps", mRequest.bitrateKbps}, {"hevc", mRequest.hevc}}}};
+	          {"request", {{"height", mRequest.height}, {"fps", mRequest.fps}, {"bitrate_kbps", mRequest.bitrateKbps}, {"hdr", mRequest.hdr}}}};
 	if (mSource)
 		j["source"] = mSource->stats();
 	auto s = mHub.stats();

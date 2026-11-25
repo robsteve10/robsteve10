@@ -5,9 +5,7 @@
 #include <nlohmann/json.hpp>
 
 #include <chrono>
-#include <condition_variable>
 #include <cstring>
-#include <deque>
 #include <future>
 #include <thread>
 
@@ -19,166 +17,12 @@ namespace {
 
 constexpr int kPtH264High = 102;
 constexpr int kPtH264Base = 106;
-constexpr int kPtH265 = 104;
 constexpr int kPtOpus = 111;
+constexpr int kPtRed = 63;
+constexpr int kExtTransportCc = 3;
 constexpr int kExtPlayoutDelay = 6;
+const char *kTransportCcUri = "http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01";
 const char *kPlayoutDelayUri = "http://www.webrtc.org/experiments/rtp-hdrext/playout-delay";
-
-// Pulls Wi-Fi loss out of the phone's RTCP feedback for the video stream:
-//  - receiver reports: packets that never arrived, even after retransmission
-//  - generic NACKs: packets that had to be re-sent (a sign of airtime trouble)
-class LossMonitor final : public rtc::MediaHandler {
-public:
-	LossMonitor(uint32_t ssrc, std::function<void(uint64_t lost, uint64_t nacked)> cb) : mSsrc(ssrc), mCb(std::move(cb)) {}
-
-	void incoming(rtc::message_vector &messages, const rtc::message_callback &) override {
-		for (const auto &m : messages) {
-			if (m->type != rtc::Message::Control)
-				continue;
-			parse(reinterpret_cast<const uint8_t *>(m->data()), m->size());
-		}
-	}
-
-private:
-	void parse(const uint8_t *p, size_t n) {
-		uint64_t lost = 0, nacked = 0;
-		size_t off = 0;
-		while (off + 4 <= n) {
-			uint8_t count = p[off] & 0x1f;
-			uint8_t pt = p[off + 1];
-			size_t len = (size_t(p[off + 2]) << 8 | p[off + 3]) * 4 + 4;
-			if (off + len > n || len < 8)
-				break;
-			const uint8_t *b = p + off;
-			if (pt == 201 || pt == 200) { // RR or SR: report blocks start after sender SSRC (+ sender info for SR)
-				size_t blocks = (pt == 201 ? 8 : 28);
-				for (uint8_t i = 0; i < count && blocks + 24 <= len; i++, blocks += 24) {
-					const uint8_t *r = b + blocks;
-					uint32_t ssrc = uint32_t(r[0]) << 24 | uint32_t(r[1]) << 16 | uint32_t(r[2]) << 8 | r[3];
-					if (ssrc != mSsrc)
-						continue;
-					int32_t cum = int32_t(uint32_t(r[5]) << 16 | uint32_t(r[6]) << 8 | r[7]);
-					if (cum & 0x800000)
-						cum |= int32_t(0xff000000);
-					if (mHaveCum && cum > mLastCum)
-						lost += uint64_t(cum - mLastCum);
-					mLastCum = cum;
-					mHaveCum = true;
-				}
-			} else if (pt == 205 && count == 1 && len >= 16) { // RTPFB generic NACK
-				uint32_t media = uint32_t(b[8]) << 24 | uint32_t(b[9]) << 16 | uint32_t(b[10]) << 8 | b[11];
-				if (media == mSsrc) {
-					for (size_t f = 12; f + 4 <= len; f += 4) {
-						uint16_t blp = uint16_t(b[f + 2] << 8 | b[f + 3]);
-						nacked += 1;
-						while (blp) {
-							nacked += blp & 1;
-							blp >>= 1;
-						}
-					}
-				}
-			}
-			off += len;
-		}
-		if (lost || nacked)
-			mCb(lost, nacked);
-	}
-
-	uint32_t mSsrc;
-	std::function<void(uint64_t, uint64_t)> mCb;
-	int32_t mLastCum = 0;
-	bool mHaveCum = false;
-};
-
-// Token bucket that lets ordinary frames through untouched and only spreads out
-// bursts bigger than `burstBytes` (keyframes). A gigabit-wired bridge can dump a
-// 150 KB keyframe into the access point faster than Wi-Fi can drain it, and a
-// shallow AP queue then drops the tail - which costs a retransmission round trip,
-// or a whole new keyframe.
-class BurstSmoother final : public rtc::MediaHandler {
-public:
-	BurstSmoother(double bytesPerSecond, double burstBytes)
-	    : mRate(bytesPerSecond), mBurst(burstBytes), mTokens(burstBytes), mLast(Clock::now()) {
-		mThread = std::thread([this] { run(); });
-	}
-	~BurstSmoother() override {
-		{
-			std::lock_guard<std::mutex> lock(mMutex);
-			mStop = true;
-		}
-		mCv.notify_all();
-		if (mThread.joinable())
-			mThread.join();
-	}
-
-	void outgoing(rtc::message_vector &messages, const rtc::message_callback &send) override {
-		std::lock_guard<std::mutex> lock(mMutex);
-		refill();
-		mSend = send;
-		rtc::message_vector now;
-		for (auto &m : messages) {
-			if (m->type != rtc::Message::Binary) { // RTCP etc. never waits
-				now.push_back(std::move(m));
-				continue;
-			}
-			if (mQueue.empty() && mTokens > 0) {
-				mTokens -= double(m->size());
-				now.push_back(std::move(m));
-			} else {
-				mQueue.push_back(std::move(m));
-			}
-		}
-		messages = std::move(now);
-		if (!mQueue.empty())
-			mCv.notify_all();
-	}
-
-private:
-	void refill() {
-		auto t = Clock::now();
-		double dt = std::chrono::duration<double>(t - mLast).count();
-		mLast = t;
-		mTokens = std::min(mBurst, mTokens + dt * mRate);
-	}
-
-	void run() {
-		std::unique_lock<std::mutex> lock(mMutex);
-		while (!mStop) {
-			if (mQueue.empty()) {
-				mCv.wait(lock);
-				continue;
-			}
-			refill();
-			if (mTokens <= 0) {
-				auto wait = std::chrono::duration<double>((-mTokens + 1200.0) / mRate);
-				mCv.wait_for(lock, std::chrono::duration_cast<std::chrono::microseconds>(wait));
-				continue;
-			}
-			while (!mQueue.empty() && mTokens > 0) {
-				auto m = std::move(mQueue.front());
-				mQueue.pop_front();
-				mTokens -= double(m->size());
-				auto send = mSend;
-				lock.unlock();
-				try {
-					if (send)
-						send(m);
-				} catch (...) {
-				}
-				lock.lock();
-			}
-		}
-	}
-
-	double mRate, mBurst, mTokens;
-	Clock::time_point mLast;
-	std::mutex mMutex;
-	std::condition_variable mCv;
-	std::deque<rtc::message_ptr> mQueue;
-	rtc::message_callback mSend;
-	bool mStop = false;
-	std::thread mThread;
-};
 
 uint32_t randomSsrc() {
 	auto s = randomId(4);
@@ -204,96 +48,114 @@ Peer::~Peer() { close(); }
 
 void Peer::setup() {
 	rtc::Configuration cfg;
-	// One UDP port for every phone: easy to allow through a firewall or publish from Docker.
+	// One UDP port for every phone: easy to allow through a firewall.
 	cfg.enableIceUdpMux = true;
 	cfg.portRangeBegin = mNet.udpPort;
 	cfg.portRangeEnd = mNet.udpPort;
 	if (mNet.bindAddress)
 		cfg.bindAddress = *mNet.bindAddress;
-	// We create the offer ourselves, once every track and channel is in place.
-	cfg.disableAutoNegotiation = true;
-	// LAN only: no STUN/TURN servers, host candidates are all a home network needs.
+	cfg.disableAutoNegotiation = true; // we create the offer once every track and channel exists
+	// LAN only: no STUN/TURN, host candidates are all a home network needs.
 	mPc = std::make_shared<rtc::PeerConnection>(cfg);
 
 	mHevc = mHub.hevc();
+	mMse = mHevc || mOpts.mediaPlayer; // Safari plays HEVC (and HDR) reliably only in its media player
 	const std::string cname = "duoplay";
-	const std::string msid = "duoplay-" + mId;
+	std::weak_ptr<Peer> weak = weak_from_this();
 
-	// --- video ---
-	uint32_t vssrc = randomSsrc();
-	rtc::Description::Video video("video", rtc::Description::Direction::SendOnly);
-	if (mHevc) {
-		video.addH265Codec(kPtH265, "level-id=93;profile-id=1;tier-flag=0;tx-mode=SRST");
-	} else {
+	if (!mMse) {
+		// ---- video over RTP (H.264) ----
+		uint32_t vssrc = randomSsrc();
+		rtc::Description::Video video("video", rtc::Description::Direction::SendOnly);
 		video.addH264Codec(kPtH264High, "profile-level-id=640c1f;packetization-mode=1;level-asymmetry-allowed=1");
 		video.addH264Codec(kPtH264Base, "profile-level-id=42e01f;packetization-mode=1;level-asymmetry-allowed=1");
+		for (int pt : {kPtH264High, kPtH264Base})
+			if (auto *map = video.rtpMap(pt))
+				map->addFeedback("transport-cc");
+		video.addExtMap(rtc::Description::Entry::ExtMap(kExtTransportCc, kTransportCcUri));
+		video.addExtMap(rtc::Description::Entry::ExtMap(kExtPlayoutDelay, kPlayoutDelayUri));
+		// Separate stream ids for picture and sound: the phone then doesn't hold the
+		// picture back to lip-sync it with the audio jitter buffer.
+		video.addSSRC(vssrc, cname, "duoplay-video-" + mId, "video");
+		mVideo = mPc->addTrack(video);
+
+		mVideoCfg = std::make_shared<rtc::RtpPacketizationConfig>(vssrc, cname, kPtH264High, rtc::H264RtpPacketizer::ClockRate);
+		mVideoCfg->playoutDelayId = kExtPlayoutDelay;
+		mVideoCfg->playoutDelayMin = 0;
+		mVideoCfg->playoutDelayMax = mOpts.latencyMode == 0 ? 0 : (mOpts.latencyMode == 1 ? 4 : 15); // x10 ms
+
+		auto pack = std::make_shared<rtc::H264RtpPacketizer>(rtc::NalUnit::Separator::StartSequence, mVideoCfg);
+		pack->addToChain(std::make_shared<rtc::RtcpSrReporter>(mVideoCfg));
+		pack->addToChain(std::make_shared<rtc::PliHandler>([weak] {
+			if (auto self = weak.lock())
+				self->mHub.requestKeyframe("phone asked (PLI)");
+		}));
+		WifiLink::Options lo;
+		lo.ssrc = vssrc;
+		lo.twccExtId = kExtTransportCc;
+		lo.pace = mOpts.smoothBursts;
+		// Normal frames leave at once; only bursts above ~3 average frames are spread out,
+		// at 6x the stream's rate.
+		lo.paceBytesPerSec = std::max(60e6, mOpts.expectedKbps * 1000.0 * 6) / 8.0;
+		lo.burstBytes = std::max(48000.0, mOpts.expectedKbps * 1000.0 / 8.0 / std::max(1, mOpts.fps) * 3);
+		lo.history = 4096;
+		mLink = std::make_shared<WifiLink>(lo, [weak](uint64_t signal) {
+			if (auto self = weak.lock())
+				if (self->mOpts.adaptiveBitrate)
+					self->mHub.peerLoss(self->mId, signal);
+		});
+		mLink->setCongestionFeedback(mOpts.adaptiveBitrate);
+		pack->addToChain(mLink);
+		mVideo->setMediaHandler(pack);
+		mVideo->onOpen([weak] {
+			if (auto self = weak.lock()) {
+				self->mVideoOpen = true;
+				self->mHub.requestKeyframe("video track open");
+			}
+		});
+		mVideo->onClosed([weak] {
+			if (auto self = weak.lock())
+				self->mVideoOpen = false;
+		});
+	} else {
+		// ---- video as MP4 fragments for Safari's media player (HEVC / HDR) ----
+		Fmp4Muxer::Color color;
+		if (mHub.hdr())
+			color = {9, 16, 9, false}; // BT.2020 primaries, PQ (SMPTE ST 2084), BT.2020 non-constant, limited range
+		mMuxer = std::make_unique<Fmp4Muxer>(mHevc, mOpts.fps, color);
+		mMedia = mPc->createDataChannel("media"); // reliable, ordered
+		mMedia->onOpen([weak] {
+			if (auto self = weak.lock()) {
+				self->mMediaOpen = true;
+				self->mNeedKeyframe = true;
+				self->mHub.requestKeyframe("media channel open");
+			}
+		});
 	}
-	video.addExtMap(rtc::Description::Entry::ExtMap(kExtPlayoutDelay, kPlayoutDelayUri));
-	video.addSSRC(vssrc, cname, msid, "video");
-	mVideo = mPc->addTrack(video);
 
-	mVideoCfg = std::make_shared<rtc::RtpPacketizationConfig>(vssrc, cname, mHevc ? kPtH265 : kPtH264High,
-	                                                          rtc::H264RtpPacketizer::ClockRate);
-	// Playout-delay extension tells the phone how much jitter buffering it may add.
-	mVideoCfg->playoutDelayId = kExtPlayoutDelay;
-	mVideoCfg->playoutDelayMin = 0;
-	mVideoCfg->playoutDelayMax = mOpts.latencyMode == 0 ? 0 : (mOpts.latencyMode == 1 ? 4 : 15); // x10 ms
-
-	std::shared_ptr<rtc::RtpPacketizer> vpack;
-	if (mHevc)
-		vpack = std::make_shared<rtc::H265RtpPacketizer>(rtc::NalUnit::Separator::StartSequence, mVideoCfg);
-	else
-		vpack = std::make_shared<rtc::H264RtpPacketizer>(rtc::NalUnit::Separator::StartSequence, mVideoCfg);
-	vpack->addToChain(std::make_shared<rtc::RtcpSrReporter>(mVideoCfg));
-	// Large history: a 1080p keyframe alone can be a couple of hundred packets, and the
-	// phone must be able to NACK any of them.
-	vpack->addToChain(std::make_shared<rtc::RtcpNackResponder>(4096));
-	std::weak_ptr<Peer> weak = weak_from_this();
-	vpack->addToChain(std::make_shared<rtc::PliHandler>([weak] {
-		if (auto self = weak.lock())
-			self->mHub.requestKeyframe("phone asked (PLI)");
-	}));
-	vpack->addToChain(std::make_shared<LossMonitor>(vssrc, [weak](uint64_t lost, uint64_t nacked) {
-		if (auto self = weak.lock())
-			self->onRtcpLoss(lost, nacked);
-	}));
-	if (mOpts.smoothBursts) {
-		// Let normal frames out instantly; pace only the excess at ~6x the stream rate.
-		double bytesPerSec = std::max(60e6, mOpts.expectedKbps * 1000.0 * 6) / 8.0;
-		double burst = std::max(48000.0, mOpts.expectedKbps * 1000.0 / 8.0 / 60.0 * 3); // ~3 average frames
-		vpack->addToChain(std::make_shared<BurstSmoother>(bytesPerSec, burst));
-	}
-	mVideo->setMediaHandler(vpack);
-	mVideo->onOpen([weak] {
-		if (auto self = weak.lock()) {
-			self->mVideoOpen = true;
-			self->mHub.requestKeyframe("video track open");
-		}
-	});
-	mVideo->onClosed([weak] {
-		if (auto self = weak.lock())
-			self->mVideoOpen = false;
-	});
-
-	// --- audio ---
+	// ---- audio: Opus over RTP, with redundancy and retransmission ----
 	uint32_t assrc = randomSsrc();
 	rtc::Description::Audio audio("audio", rtc::Description::Direction::SendOnly);
+	audio.addAudioCodec(kPtRed, "red/48000/2", std::to_string(kPtOpus) + "/" + std::to_string(kPtOpus));
 	audio.addOpusCodec(kPtOpus, "minptime=10;useinbandfec=1;stereo=1;sprop-stereo=1");
-	audio.addSSRC(assrc, cname, msid, "audio");
+	for (int pt : {kPtRed, kPtOpus})
+		if (auto *map = audio.rtpMap(pt))
+			map->addFeedback("nack");
+	audio.addSSRC(assrc, cname, "duoplay-audio-" + mId, "audio");
 	mAudio = mPc->addTrack(audio);
 	mAudioCfg = std::make_shared<rtc::RtpPacketizationConfig>(assrc, cname, kPtOpus, rtc::OpusRtpPacketizer::DefaultClockRate);
 	auto apack = std::make_shared<rtc::OpusRtpPacketizer>(mAudioCfg);
 	apack->addToChain(std::make_shared<rtc::RtcpSrReporter>(mAudioCfg));
+	apack->addToChain(std::make_shared<rtc::RtcpNackResponder>(512));
 	mAudio->setMediaHandler(apack);
 	mAudio->onOpen([weak] {
 		if (auto self = weak.lock())
 			self->mAudioOpen = true;
 	});
 
-	// --- data channels ---
+	// ---- data channels ----
 	// Controller input: unordered and never retransmitted. Every packet carries the
-	// complete pad state, so a lost one is healed by the next (sent at least every
-	// 50 ms while anything is held) - a retransmission would only arrive stale.
+	// complete pad state, so a lost one is healed by the next.
 	rtc::DataChannelInit inputInit;
 	inputInit.reliability.unordered = true;
 	inputInit.reliability.maxRetransmits = 0;
@@ -323,7 +185,6 @@ void Peer::setup() {
 		auto self = weak.lock();
 		if (!self)
 			return;
-		self->mPcState = int(state);
 		LOGI("peer", "%s: %s", self->mId.c_str(),
 		     state == rtc::PeerConnection::State::Connected      ? "connected"
 		     : state == rtc::PeerConnection::State::Disconnected ? "disconnected (may recover)"
@@ -334,12 +195,10 @@ void Peer::setup() {
 			self->mDisconnectedSinceMs = nowMs();
 		else
 			self->mDisconnectedSinceMs = 0;
-		if (state == rtc::PeerConnection::State::Connected && !self->mAttached.exchange(true)) {
+		if (state == rtc::PeerConnection::State::Connected && !self->mAttached.exchange(true))
 			self->mHub.addPeer(self);
-		}
-		if (state == rtc::PeerConnection::State::Failed || state == rtc::PeerConnection::State::Closed) {
+		if (state == rtc::PeerConnection::State::Failed || state == rtc::PeerConnection::State::Closed)
 			std::thread([self] { self->close(); }).detach();
-		}
 	});
 }
 
@@ -361,7 +220,6 @@ bool Peer::createOffer(std::string &sdp, std::string &err) {
 	}
 	sdp = std::string(*desc);
 
-	// Advertise extra addresses (e.g. the Docker host's LAN IP) as host candidates.
 	if (!mNet.announceIps.empty()) {
 		std::string extra;
 		int n = 0;
@@ -390,22 +248,28 @@ bool Peer::applyAnswer(const std::string &sdp, std::string &err) {
 		err = std::string("Bad answer: ") + e.what();
 		return false;
 	}
-	// Send with whichever of our payload types the phone picked first.
 	auto remote = mPc->remoteDescription();
-	if (remote) {
-		for (int i = 0; i < remote->mediaCount(); i++) {
-			auto entry = remote->media(i);
-			auto *media = std::get_if<rtc::Description::Media *>(&entry);
-			if (!media || (*media)->type() != "video")
-				continue;
-			for (int pt : (*media)->payloadTypes()) {
-				if (pt == kPtH264High || pt == kPtH264Base || pt == kPtH265) {
+	if (!remote)
+		return true;
+	for (int i = 0; i < remote->mediaCount(); i++) {
+		auto entry = remote->media(i);
+		auto *media = std::get_if<rtc::Description::Media *>(&entry);
+		if (!media)
+			continue;
+		auto pts = (*media)->payloadTypes();
+		if ((*media)->type() == "video" && mVideoCfg) {
+			for (int pt : pts) {
+				if (pt == kPtH264High || pt == kPtH264Base) {
 					mVideoCfg->payloadType = uint8_t(pt);
-					LOGI("peer", "%s: phone accepted video payload type %d (%s)", mId.c_str(), pt,
-					     pt == kPtH265 ? "H.265" : pt == kPtH264High ? "H.264 high" : "H.264 baseline");
+					LOGI("peer", "%s: phone accepted H.264 (%s)", mId.c_str(), pt == kPtH264High ? "high" : "baseline");
 					break;
 				}
 			}
+		} else if ((*media)->type() == "audio") {
+			bool red = std::find(pts.begin(), pts.end(), kPtRed) != pts.end();
+			mAudioRed = red;
+			mAudioCfg->payloadType = uint8_t(red ? kPtRed : kPtOpus);
+			LOGI("peer", "%s: audio %s", mId.c_str(), red ? "with redundancy (RED)" : "plain Opus");
 		}
 	}
 	return true;
@@ -430,13 +294,7 @@ bool Peer::expired(int64_t now) const {
 	if (!mAttached && now - mCreatedMs > 20000)
 		return true; // never finished connecting
 	int64_t since = mDisconnectedSinceMs;
-	if (since && now - since > 15000)
-		return true; // disconnected and not coming back
-	return false;
-}
-
-std::string Peer::describe() const {
-	return mId + (mPaused ? " (paused)" : "");
+	return since && now - since > 15000;
 }
 
 void Peer::heard() {
@@ -449,21 +307,27 @@ void Peer::heard() {
 }
 
 void Peer::sendVideo(const std::shared_ptr<const Bytes> &frame, uint32_t ts90k, bool keyframe) {
-	if (!mVideoOpen || mClosed)
+	if (mClosed)
 		return;
 	if (mHub.hevc() != mHevc) {
 		if (!mCodecWarned.exchange(true))
-			sendControl(R"({"t":"renegotiate","reason":"codec changed"})");
+			sendControl(R"({"t":"renegotiate","reason":"picture format changed"})");
 		return;
 	}
-	// The phone sends a heartbeat several times a second while its page is alive. If it
-	// goes quiet (app backgrounded or suspended), stop spending Wi-Fi airtime on it.
+	// The page sends a heartbeat several times a second while it's alive. If it goes
+	// quiet (app backgrounded or suspended), stop spending Wi-Fi airtime on it.
 	int64_t now = nowMs();
 	if (!mPaused && now - mLastHeardMs > 3000) {
 		mPaused = true;
 		LOGI("peer", "%s: phone went quiet, pausing its stream", mId.c_str());
 	}
 	if (mPaused)
+		return;
+	if (mMse) {
+		sendVideoMse(*frame, keyframe);
+		return;
+	}
+	if (!mVideoOpen)
 		return;
 	if (mNeedKeyframe) {
 		if (!keyframe) {
@@ -482,11 +346,120 @@ void Peer::sendVideo(const std::shared_ptr<const Bytes> &frame, uint32_t ts90k, 
 	}
 }
 
+// Media-channel message: [type][flags: bit0 = last chunk][message id, u32 LE][payload chunk].
+bool Peer::sendMedia(uint8_t type, const std::vector<uint8_t> &payload) {
+	size_t limit = 60000;
+	try {
+		limit = std::min<size_t>(limit, std::max<size_t>(mMedia->maxMessageSize(), 4096));
+	} catch (...) {
+	}
+	size_t chunk = limit - 6;
+	uint32_t id = ++mMediaMsgId;
+	size_t off = 0;
+	do {
+		size_t n = std::min(chunk, payload.size() - off);
+		rtc::binary msg(6 + n);
+		msg[0] = std::byte(type);
+		msg[1] = std::byte(off + n >= payload.size() ? 1 : 0);
+		for (int i = 0; i < 4; i++)
+			msg[2 + i] = std::byte((id >> (8 * i)) & 0xff);
+		if (n)
+			memcpy(msg.data() + 6, payload.data() + off, n);
+		try {
+			if (!mMedia->send(std::move(msg)))
+				return false;
+		} catch (...) {
+			return false;
+		}
+		off += n;
+	} while (off < payload.size());
+	return true;
+}
+
+void Peer::sendVideoMse(const Bytes &frame, bool keyframe) {
+	if (!mMediaOpen || !mMedia)
+		return;
+	std::lock_guard<std::mutex> lock(mMediaMutex);
+	int64_t now = nowMs();
+	const auto *data = reinterpret_cast<const uint8_t *>(frame.data());
+	if (mNeedKeyframe && !keyframe) {
+		if (now - mLastKeyRequestMs > 400) {
+			mLastKeyRequestMs = now;
+			mHub.requestKeyframe("media player waiting for keyframe");
+		}
+		return;
+	}
+	if (keyframe) {
+		bool changed = mMuxer->configure(data, frame.size());
+		if (mMuxer->ready() && (changed || !mInitSent)) {
+			json header = {{"mime", mMuxer->mime()}, {"width", mMuxer->width()}, {"height", mMuxer->height()}, {"hdr", mHub.hdr()}};
+			std::string h = header.dump();
+			auto init = mMuxer->initSegment();
+			std::vector<uint8_t> payload;
+			payload.push_back(uint8_t(h.size() & 0xff));
+			payload.push_back(uint8_t(h.size() >> 8));
+			payload.insert(payload.end(), h.begin(), h.end());
+			payload.insert(payload.end(), init.begin(), init.end());
+			if (sendMedia(1, payload)) {
+				mInitSent = true;
+				LOGI("peer", "%s: media player stream %s (%dx%d)", mId.c_str(), mMuxer->mime().c_str(), mMuxer->width(), mMuxer->height());
+			}
+		}
+	}
+	if (!mInitSent)
+		return;
+	mNeedKeyframe = false;
+
+	// The reliable channel never drops anything, so Wi-Fi trouble shows up as a growing
+	// send backlog, which on screen is latency. Back the console off early; if the backlog
+	// still gets out of hand, skip to the next keyframe rather than play catch-up.
+	size_t backlog = 0;
+	try {
+		backlog = mMedia->bufferedAmount();
+	} catch (...) {
+	}
+	if (backlog > 1500000) {
+		mNeedKeyframe = true;
+		mHub.requestKeyframe("media backlog");
+		if (mOpts.adaptiveBitrate)
+			mHub.peerLoss(mId, 40);
+		return;
+	}
+	if (backlog > 300000 && now - mLastCongestionMs > 200 && mOpts.adaptiveBitrate) {
+		mLastCongestionMs = now;
+		mHub.peerLoss(mId, 15);
+	}
+	sendMedia(2, mMuxer->fragment(data, frame.size(), keyframe));
+}
+
 void Peer::sendAudio(const uint8_t *data, size_t size, uint32_t ts48k) {
 	if (!mAudioOpen || mClosed || mPaused)
 		return;
 	try {
-		mAudio->sendFrame(reinterpret_cast<const std::byte *>(data), size, rtc::FrameInfo(ts48k));
+		if (mAudioRed) {
+			// RFC 2198: the previous frame rides along, so one lost packet costs no sound.
+			std::vector<std::byte> p;
+			p.reserve(size + mPrevAudio.size() + 5);
+			uint32_t offset = ts48k - mPrevAudioTs;
+			if (!mPrevAudio.empty() && mPrevAudio.size() < 1024 && offset > 0 && offset < 16384) {
+				p.push_back(std::byte(0x80 | kPtOpus));
+				p.push_back(std::byte(offset >> 6));
+				p.push_back(std::byte(((offset & 0x3f) << 2) | ((mPrevAudio.size() >> 8) & 0x3)));
+				p.push_back(std::byte(mPrevAudio.size() & 0xff));
+				p.push_back(std::byte(kPtOpus));
+				for (uint8_t b : mPrevAudio)
+					p.push_back(std::byte(b));
+			} else {
+				p.push_back(std::byte(kPtOpus));
+			}
+			for (size_t i = 0; i < size; i++)
+				p.push_back(std::byte(data[i]));
+			mPrevAudio.assign(data, data + size);
+			mPrevAudioTs = ts48k;
+			mAudio->sendFrame(p.data(), p.size(), rtc::FrameInfo(ts48k));
+		} else {
+			mAudio->sendFrame(reinterpret_cast<const std::byte *>(data), size, rtc::FrameInfo(ts48k));
+		}
 	} catch (const std::exception &e) {
 		LOGD("peer", "%s: audio send failed: %s", mId.c_str(), e.what());
 	}
@@ -556,22 +529,33 @@ void Peer::onControl(const std::string &msg) {
 	}
 	std::string t = j.value("t", "");
 	if (t == "ping") {
-		sendControl(json{{"t", "pong"}, {"id", j.value("id", 0)}}.dump());
+		sendControl(json{{"t", "pong"}, {"id", j.value("id", 0.0)}}.dump());
+		json link = {{"t", "link"}};
+		if (mLink) {
+			auto s = mLink->stats();
+			link["queue_ms"] = s.queueMs;
+			link["loss_pct"] = s.lossPct;
+			link["rtx"] = s.retransmits;
+			link["twcc"] = s.feedbacks;
+		} else if (mMedia) {
+			size_t backlog = 0;
+			try {
+				backlog = mMedia->bufferedAmount();
+			} catch (...) {
+			}
+			link["queue_ms"] = double(backlog) * 8.0 / std::max(1000, mOpts.expectedKbps);
+			link["loss_pct"] = 0;
+		}
+		sendControl(link.dump());
 	} else if (t == "keyframe") {
+		if (mMse)
+			mNeedKeyframe = true;
 		mHub.requestKeyframe("phone saw a frozen picture");
 	} else if (t == "settings") {
 		mOpts.adaptiveBitrate = j.value("adaptive", mOpts.adaptiveBitrate);
+		if (mLink)
+			mLink->setCongestionFeedback(mOpts.adaptiveBitrate);
 	}
-}
-
-void Peer::onRtcpLoss(uint64_t lost, uint64_t nacked) {
-	if (!mOpts.adaptiveBitrate)
-		return;
-	// Unrecovered loss counts fully; packets that needed a resend count half. Random
-	// one-off Wi-Fi drops barely register, sustained airtime trouble backs the encoder off.
-	uint64_t signal = lost + nacked / 2;
-	if (signal)
-		mHub.peerLoss(mId, signal);
 }
 
 } // namespace duo

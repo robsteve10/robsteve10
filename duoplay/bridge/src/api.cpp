@@ -236,7 +236,7 @@ void Api::install(httplib::Server &srv) {
 		r.height = b.value("height", 1080);
 		r.fps = b.value("fps", 60);
 		r.bitrateKbps = std::clamp(b.value("bitrate_kbps", 0), 0, 60000);
-		r.hevc = b.value("hevc", false);
+		r.hdr = b.value("hdr", false);
 		// Reuse a running session for the same console and settings: a phone
 		// reattaching after a fold/unfold or a Wi-Fi blip must not restart the stream.
 		json st = C.sessions.status();
@@ -245,7 +245,7 @@ void Api::install(httplib::Server &srv) {
 		if (live && st.value("console_id", "") == r.consoleId && !b.value("restart", false)) {
 			const auto &q = st["request"];
 			if (q.value("height", 0) == r.height && q.value("fps", 0) == r.fps &&
-			    q.value("bitrate_kbps", -1) == r.bitrateKbps && q.value("hevc", false) == r.hevc)
+			    q.value("bitrate_kbps", -1) == r.bitrateKbps && q.value("hdr", false) == r.hdr)
 				return reply(res, {{"ok", true}, {"reused", true}});
 		}
 		std::string err;
@@ -295,6 +295,8 @@ void Api::install(httplib::Server &srv) {
 		o.smoothBursts = b.value("smooth_bursts", true);
 		o.latencyMode = std::clamp(b.value("latency", 1), 0, 2);
 		o.expectedKbps = std::clamp(b.value("expected_kbps", 15000), 1000, 60000);
+		o.fps = std::clamp(b.value("fps", 60), 30, 120);
+		o.mediaPlayer = b.value("media_player", false);
 
 		// A phone reconnecting (new page after a fold, network change...) replaces its
 		// old connection at once, so no airtime is wasted streaming to a dead socket.
@@ -328,7 +330,7 @@ void Api::install(httplib::Server &srv) {
 			std::lock_guard<std::mutex> lock(mPeersMutex);
 			mPeers[peer->id()] = peer;
 		}
-		reply(res, {{"id", peer->id()}, {"sdp", sdp}, {"hevc", C.hub.hevc()}});
+		reply(res, {{"id", peer->id()}, {"sdp", sdp}, {"transport", peer->transport()}, {"hdr", C.hub.hdr()}});
 	});
 
 	srv.Post("/api/peer/answer", [&](const httplib::Request &req, httplib::Response &res) {

@@ -54,13 +54,14 @@ public:
 	~MediaHub();
 
 	// --- source side (any thread) ---
-	void setSource(StreamSource *source, bool hevc);
+	void setSource(StreamSource *source, bool hevc, bool hdr = false);
 	void clearSource(StreamSource *source);
 	void videoSample(const uint8_t *data, size_t size);
 	void audioHeader(uint32_t sampleRate, uint32_t frameSize, uint32_t channels);
 	void audioFrame(const uint8_t *data, size_t size);
 	void broadcastControl(const std::string &json);
 	bool hevc() const { return mHevc; }
+	bool hdr() const { return mHdr; }
 
 	// --- peer side ---
 	void addPeer(const std::shared_ptr<PeerSink> &peer);
@@ -87,6 +88,7 @@ private:
 	std::mutex mSourceMutex;
 	StreamSource *mSource = nullptr;
 	std::atomic<bool> mHevc{false};
+	std::atomic<bool> mHdr{false};
 
 	std::mutex mPeersMutex;
 	std::vector<std::shared_ptr<PeerSink>> mPeers;

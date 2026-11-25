@@ -19,7 +19,7 @@ struct StreamRequest {
 	int height = 1080;      // 360 / 540 / 720 / 1080
 	int fps = 60;           // 30 / 60
 	int bitrateKbps = 0;    // 0 = default for the resolution
-	bool hevc = false;      // only if the phone can decode H.265 over WebRTC
+	bool hdr = false;       // HEVC Main10 / PQ, played by Safari's media player
 };
 
 class SourceBase;
@@ -80,6 +80,7 @@ public:
 
 std::unique_ptr<SourceBase> makeChiakiSource(SessionManager &mgr, MediaHub &hub, const ConsoleRecord &console,
                                              const StreamRequest &req, const std::string &psnAccountB64);
-std::unique_ptr<SourceBase> makeFakeSource(SessionManager &mgr, MediaHub &hub, const std::string &path, int fps);
+// `path` may hold two files separated by '|': an H.264 stream and an HEVC (HDR) one.
+std::unique_ptr<SourceBase> makeFakeSource(SessionManager &mgr, MediaHub &hub, const std::string &path, int fps, bool hdr);
 
 } // namespace duo

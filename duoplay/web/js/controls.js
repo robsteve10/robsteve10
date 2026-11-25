@@ -1,4 +1,4 @@
-// On-screen controller.
+// On-screen controller, with a Taptic tick on every press.
 //
 // All touches are tracked by one handler on the controls layer and hit-tested against
 // the geometry the layout engine computed (no DOM reads while playing). That makes
@@ -6,6 +6,7 @@
 // way it would on a real pad.
 
 import { BTN } from './layout.js';
+import { tick } from './haptics.js';
 
 const GLYPH = {
   triangle: '<svg viewBox="0 0 24 24"><path d="M12 4.5 20.5 19h-17Z"/></svg>',
@@ -134,6 +135,7 @@ export class TouchControls {
 
     if (p.kind === 'btn') {
       const def = SIMPLE[p.id];
+      tick();
       this.els[p.id].classList.add('on');
       if (def.mask) this.input.touchButton(def.mask, true);
       if (def.trigger) this.input.touchTrigger(def.trigger, 255);
@@ -150,12 +152,14 @@ export class TouchControls {
       if (performance.now() - this.lastStickTap[p.side] < 320) {
         p.click = p.side === 'l' ? BTN.L3 : BTN.R3;
         this.input.touchButton(p.click, true);
+        tick();
       }
       this.updateStick(p, e.clientX, e.clientY);
     } else if (p.kind === 'touchpad') {
       p.touchId = this.touchIdNext;
       this.touchIdNext = (this.touchIdNext + 1) & 0x7f;
       this.els.touchpad.classList.add('on');
+      tick();
       this.updateTouchpad(p, e.clientX, e.clientY);
     } else {
       this.updateCluster(p, e.clientX, e.clientY);
@@ -284,7 +288,7 @@ export class TouchControls {
     p.mask = mask;
     const off = prev & ~mask, on = mask & ~prev;
     if (off) this.input.touchButton(off, false);
-    if (on) this.input.touchButton(on, true);
+    if (on) { this.input.touchButton(on, true); tick(); }
     const el = this.els[p.kind];
     if (p.kind === 'dpad') {
       el.querySelector('.up').classList.toggle('on', !!(mask & BTN.UP));

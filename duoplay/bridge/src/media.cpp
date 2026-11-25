@@ -75,10 +75,11 @@ MediaHub::~MediaHub() {
 		mThread.join();
 }
 
-void MediaHub::setSource(StreamSource *source, bool hevc) {
+void MediaHub::setSource(StreamSource *source, bool hevc, bool hdr) {
 	std::lock_guard<std::mutex> lock(mSourceMutex);
 	mSource = source;
 	mHevc = hevc;
+	mHdr = hdr;
 	mParamSets.clear();
 	mVideoStartUs = 0;
 	mAudioTs = 0;

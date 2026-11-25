@@ -22,7 +22,7 @@ struct AccessUnit {
 	bool key;
 };
 
-std::vector<AccessUnit> splitAccessUnits(const std::string &d) {
+std::vector<AccessUnit> splitAccessUnits(const std::string &d, bool hevc) {
 	std::vector<size_t> starts;
 	const auto *p = reinterpret_cast<const uint8_t *>(d.data());
 	size_t n = d.size();
@@ -40,10 +40,21 @@ std::vector<AccessUnit> splitAccessUnits(const std::string &d) {
 		size_t h = s + (p[s + 2] == 1 ? 3 : 4);
 		if (h >= n)
 			break;
-		int t = p[h] & 0x1f;
-		bool vcl = t >= 1 && t <= 5;
-		bool firstSlice = vcl && h + 1 < n && (p[h + 1] & 0x80); // first_mb_in_slice == 0
-		bool boundary = auHasPicture && (t == 9 || t == 7 || t == 8 || t == 6 || firstSlice);
+		int t;
+		bool vcl, firstSlice, boundary, key;
+		if (hevc) {
+			t = (p[h] >> 1) & 0x3f;
+			vcl = t <= 31;
+			firstSlice = vcl && h + 2 < n && (p[h + 2] & 0x80); // first_slice_segment_in_pic_flag
+			boundary = auHasPicture && (t == 35 || t == 32 || t == 33 || t == 34 || t == 39 || firstSlice);
+			key = t >= 16 && t <= 21;
+		} else {
+			t = p[h] & 0x1f;
+			vcl = t >= 1 && t <= 5;
+			firstSlice = vcl && h + 1 < n && (p[h + 1] & 0x80); // first_mb_in_slice == 0
+			boundary = auHasPicture && (t == 9 || t == 7 || t == 8 || t == 6 || firstSlice);
+			key = t == 5;
+		}
 		if (boundary) {
 			aus.push_back({auStart, s, auKey});
 			auStart = s;
@@ -52,7 +63,7 @@ std::vector<AccessUnit> splitAccessUnits(const std::string &d) {
 		}
 		if (vcl)
 			auHasPicture = true;
-		if (t == 5)
+		if (key)
 			auKey = true;
 	}
 	if (auHasPicture)
@@ -64,8 +75,14 @@ std::vector<AccessUnit> splitAccessUnits(const std::string &d) {
 
 class FakeSource final : public SourceBase {
 public:
-	FakeSource(SessionManager &mgr, MediaHub &hub, std::string path, int fps)
-	    : mMgr(mgr), mHub(hub), mPath(std::move(path)), mFps(fps > 0 ? fps : 60) {
+	FakeSource(SessionManager &mgr, MediaHub &hub, std::string path, int fps, bool hdr)
+	    : mMgr(mgr), mHub(hub), mFps(fps > 0 ? fps : 60) {
+		// "standard.h264|hdr.hevc": the second file stands in for the console's HDR stream.
+		size_t bar = path.find('|');
+		std::string sdr = path.substr(0, bar);
+		std::string hdrPath = bar == std::string::npos ? "" : path.substr(bar + 1);
+		mHevc = hdr && !hdrPath.empty();
+		mPath = mHevc ? hdrPath : sdr;
 		chiaki_controller_state_set_idle(&mLastInput);
 	}
 	~FakeSource() override { end(); }
@@ -75,13 +92,13 @@ public:
 			err = "Could not read test pattern file " + mPath;
 			return false;
 		}
-		mAus = splitAccessUnits(mData);
+		mAus = splitAccessUnits(mData, mHevc);
 		if (mAus.empty() || !mAus.front().key) {
-			err = "Test pattern must be an Annex-B H.264 stream starting with a keyframe";
+			err = "Test pattern must be an Annex-B stream starting with a keyframe";
 			return false;
 		}
-		LOGI("test", "Test pattern: %zu frames from %s at %d fps", mAus.size(), mPath.c_str(), mFps);
-		mHub.setSource(this, false);
+		LOGI("test", "Test pattern: %zu %s frames from %s at %d fps", mAus.size(), mHevc ? "HEVC" : "H.264", mPath.c_str(), mFps);
+		mHub.setSource(this, mHevc, mHevc);
 		mHub.audioHeader(48000, 960, 2);
 		mRunning = true;
 		mVideo = std::thread([this] { videoLoop(); });
@@ -172,6 +189,7 @@ private:
 	MediaHub &mHub;
 	std::string mPath;
 	int mFps;
+	bool mHevc = false;
 	std::string mData;
 	std::vector<AccessUnit> mAus;
 	std::atomic<bool> mRunning{false};
@@ -183,8 +201,8 @@ private:
 	uint64_t mInputUpdates = 0;
 };
 
-std::unique_ptr<SourceBase> makeFakeSource(SessionManager &mgr, MediaHub &hub, const std::string &path, int fps) {
-	return std::make_unique<FakeSource>(mgr, hub, path, fps);
+std::unique_ptr<SourceBase> makeFakeSource(SessionManager &mgr, MediaHub &hub, const std::string &path, int fps, bool hdr) {
+	return std::make_unique<FakeSource>(mgr, hub, path, fps, hdr);
 }
 
 } // namespace duo

@@ -1,10 +1,10 @@
-// Controller state from touch + physical controllers, and its trip to the bridge.
+// Controller state from touch and Bluetooth controllers, and its trip to the bridge.
 //
 // Wi-Fi strategy: every packet carries the *complete* pad state and goes over an
-// unordered, never-retransmitted data channel. A packet lost in the air is simply
-// superseded by the next one (sent on every change, and at least every 50 ms while
-// anything is held), so input never waits behind a retransmission. The bridge drops
-// any snapshot older than one it already applied.
+// unordered, never-retransmitted data channel, so a lost packet is simply replaced by
+// the next one instead of holding input back while it is re-sent. Each change is sent
+// twice, 8 ms apart (a single Wi-Fi drop then costs nothing), and while anything is held
+// the state repeats every 45 ms. The bridge drops any packet older than one it applied.
 
 import { BTN } from './layout.js';
 
@@ -102,14 +102,14 @@ export class InputSender {
     this.seq = 0;
     this.pending = false;
     this.lastSend = 0;
+    this.repeatTimer = 0;
     this.sent = 0;
     state.onChange(() => this.schedule());
     // Repeats heal lost packets while something is held; the slow heartbeat tells the
     // bridge this page is alive (it pauses the stream to a phone that went quiet).
     this.timer = setInterval(() => {
-      const neutral = this.state.isNeutral();
       const gap = performance.now() - this.lastSend;
-      if ((!neutral && gap >= 45) || gap >= 400) this.flush();
+      if ((!this.state.isNeutral() && gap >= 45) || gap >= 400) this.flush();
     }, 25);
   }
 
@@ -117,16 +117,22 @@ export class InputSender {
   detach() { this.channel = null; }
 
   schedule() {
-    // Coalesce everything that changes within one event (e.g. two fingers) into one packet.
+    // Coalesce everything that changes within one event (e.g. two thumbs) into one packet.
     if (this.pending) return;
     this.pending = true;
-    queueMicrotask(() => { this.pending = false; this.flush(); });
+    queueMicrotask(() => {
+      this.pending = false;
+      this.flush();
+      // The same snapshot again shortly after: one lost Wi-Fi frame then costs nothing.
+      clearTimeout(this.repeatTimer);
+      this.repeatTimer = setTimeout(() => { if (performance.now() - this.lastSend >= 6) this.flush(); }, 8);
+    });
   }
 
   flush() {
     const ch = this.channel;
     if (!ch || ch.readyState !== 'open') return;
-    // Never queue up input behind a congested link: stale input is worse than none.
+    // Never queue input behind a congested link: stale input is worse than none.
     if (ch.bufferedAmount > 2048) return;
     try {
       ch.send(encodeState(this.state.snapshot(), this.seq++));
@@ -135,26 +141,28 @@ export class InputSender {
     } catch { /* channel closing */ }
   }
 
-  /** Send "nothing pressed" right now, e.g. when the screen changes under the thumbs. */
+  /** Send the current state right now, e.g. "nothing pressed" after a screen change. */
   neutralNow() { this.flush(); }
 }
 
-// ---- physical controllers (DualSense / DualShock / MFi over Bluetooth) ----------------
+// ---- Bluetooth controllers (DualSense, DualShock 4, Xbox, MFi) ----------------------
+// Safari exposes them through the Gamepad API on a secure (HTTPS) page once a button
+// has been pressed. (Safari on iPhone has no controller rumble API, so console rumble
+// can't be passed through.)
 
-const STD = [ // Gamepad API "standard" mapping index -> PS button
+const STD = [ // "standard" mapping index -> PS button
   BTN.CROSS, BTN.CIRCLE, BTN.SQUARE, BTN.TRIANGLE, BTN.L1, BTN.R1, 0, 0,
   BTN.CREATE, BTN.OPTIONS, BTN.L3, BTN.R3, BTN.UP, BTN.DOWN, BTN.LEFT, BTN.RIGHT, BTN.PS, BTN.TOUCHPAD,
 ];
 
 export class GamepadInput {
-  constructor(state, { onActive } = {}) {
+  constructor(state, { onActive, onConnect } = {}) {
     this.state = state;
     this.onActive = onActive;
+    this.onConnect = onConnect;
     this.running = false;
     this.lastActive = 0;
-    this.rumbleTimer = null;
-    this.rumbleLevel = [0, 0];
-    window.addEventListener('gamepadconnected', () => this.start());
+    window.addEventListener('gamepadconnected', (e) => { this.start(); this.onConnect?.(e.gamepad); });
     window.addEventListener('gamepaddisconnected', () => { if (!this.pads().length) this.stop(); });
     if (this.pads().length) this.start();
   }
@@ -169,7 +177,7 @@ export class GamepadInput {
     const tick = () => {
       if (!this.running) return;
       this.poll();
-      requestAnimationFrame(tick); // polls at the display's refresh rate (up to 120 Hz)
+      requestAnimationFrame(tick);
     };
     requestAnimationFrame(tick);
   }
@@ -200,30 +208,11 @@ export class GamepadInput {
         if (Math.hypot(x2, y2) > Math.hypot(rx, ry)) { rx = x2; ry = y2; }
       }
     }
-    const active = buttons || l2 || r2 || lx || ly || rx || ry;
-    if (active) {
+    if (buttons || l2 || r2 || lx || ly || rx || ry) {
       const now = performance.now();
       if (now - this.lastActive > 1000) this.onActive?.();
       this.lastActive = now;
     }
     this.state.setPad({ buttons, l2, r2, lx, ly, rx, ry });
-  }
-
-  /** Console rumble (0-255 per motor) -> the controller's actuator, where Safari supports it. */
-  rumble(left, right) {
-    this.rumbleLevel = [left, right];
-    const play = () => {
-      const [l, r] = this.rumbleLevel;
-      for (const gp of this.pads()) {
-        const act = gp.vibrationActuator;
-        if (!act?.playEffect) continue;
-        if (!l && !r) { act.reset?.(); continue; }
-        act.playEffect('dual-rumble', { duration: 1200, strongMagnitude: l / 255, weakMagnitude: r / 255 }).catch(() => {});
-      }
-    };
-    play();
-    clearInterval(this.rumbleTimer);
-    // The console only reports changes; keep a steady rumble going until it says stop.
-    if (left || right) this.rumbleTimer = setInterval(play, 1000);
   }
 }

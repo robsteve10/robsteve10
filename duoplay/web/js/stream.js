@@ -1,12 +1,20 @@
-// WebRTC connection to the bridge, built to ride out Wi-Fi.
+// Connection to the bridge, built to ride out Wi-Fi.
 //
-// The console session lives on the bridge, independent of this page. Folding or
-// unfolding the phone never touches the connection at all. If the connection does
-// drop (Wi-Fi blip, app suspended, roaming between access points), reattaching is
-// just a WebRTC handshake on the LAN plus one keyframe, typically well under a second,
-// and the game keeps running meanwhile.
+// The console session lives on the bridge, independent of this page: folding or
+// unfolding never touches the connection, and if Wi-Fi drops it (or iOS suspends the
+// app) reattaching is a WebRTC handshake plus one keyframe, a fraction of a second,
+// while the game keeps running.
+//
+// Picture paths:
+//   standard  H.264 over WebRTC RTP: lowest latency, NACK retransmission, playout-delay
+//             hint and Safari 27's jitterBufferTarget for the buffering mode you choose.
+//   HDR       HEVC Main10/PQ wrapped as MP4 fragments over a reliable data channel into
+//             Safari's own media player (see hdr.js), which renders HDR10 natively.
+// Audio is always Opus over WebRTC, played through its own <audio> element and not
+// lip-synced to the picture: for a game, sound arriving first is better than late video.
 
 import { api } from './api.js';
+import { LiveMediaPlayer, MediaReassembler } from './hdr.js';
 
 const CLIENT_ID = (() => {
   try {
@@ -16,13 +24,17 @@ const CLIENT_ID = (() => {
   } catch { return String(Math.random()).slice(2); }
 })();
 
+// Safari 27: jitterBufferTarget (ms) per buffering mode; null leaves Safari's adaptive default.
+const JITTER_TARGET = [0, null, 120];
+
 export class StreamConnection {
-  constructor({ video, sender, onSession, onControl, onStatus, onStats }) {
+  constructor({ video, audio, sender, onSession, onControl, onStatus, onStats }) {
     this.video = video;
+    this.audio = audio;
     this.sender = sender;
     this.onSession = onSession;
     this.onControl = onControl;
-    this.onStatus = onStatus;   // ('connecting'|'live'|'reconnecting'|'failed', detail)
+    this.onStatus = onStatus;   // ('connecting'|'reconnecting'|'needs-tap', detail)
     this.onStats = onStats;
     this.pc = null;
     this.peerId = null;
@@ -36,6 +48,10 @@ export class StreamConnection {
     this.lastKeyReq = 0;
     this.disconnectTimer = null;
     this.settings = {};
+    this.player = null;
+    this.mediaBytes = 0;
+    this.transport = 'rtp';
+    this.bridgeStats = null;
     this.boundVisibility = () => this.onVisibility();
     this.boundOnline = () => this.active && this.reattach('network changed');
     this.boundPageShow = (e) => { if (e.persisted && this.active) this.reattach('page restored'); };
@@ -71,6 +87,8 @@ export class StreamConnection {
     this.sender.detach();
     const pc = this.pc, id = this.peerId;
     this.pc = null; this.peerId = null; this.control = null;
+    this.player?.close();
+    this.player = null;
     if (pc) { try { pc.close(); } catch { /* */ } }
     if (id) api.post('/api/peer/close', { id }).catch(() => {});
   }
@@ -98,19 +116,19 @@ export class StreamConnection {
   async attach(gen) {
     const pc = new RTCPeerConnection({ iceServers: [], bundlePolicy: 'max-bundle', rtcpMuxPolicy: 'require' });
     this.pc = pc;
-    const stream = new MediaStream();
 
     pc.ontrack = (e) => {
       if (gen !== this.gen) return;
-      stream.addTrack(e.track);
-      this.tuneReceiver(e.receiver);
-      if (this.video.srcObject !== stream) this.video.srcObject = stream;
-      this.play();
+      this.tuneReceiver(e.receiver, e.track.kind);
+      const el = e.track.kind === 'audio' ? this.audio : this.video;
+      if (e.track.kind === 'video' && this.transport !== 'rtp') return; // HDR picture comes over the media channel
+      el.srcObject = new MediaStream([e.track]);
+      this.play(el);
     };
     pc.ondatachannel = (e) => {
       const ch = e.channel;
+      ch.binaryType = 'arraybuffer';
       if (ch.label === 'input') {
-        ch.binaryType = 'arraybuffer';
         const go = () => { if (gen === this.gen) this.sender.attach(ch); };
         if (ch.readyState === 'open') go(); else ch.onopen = go;
       } else if (ch.label === 'control') {
@@ -120,6 +138,8 @@ export class StreamConnection {
           this.sendControl({ t: 'settings', adaptive: !!this.settings.adaptive });
         };
         ch.onmessage = (m) => { if (gen === this.gen) this.handleControl(m.data); };
+      } else if (ch.label === 'media') {
+        this.attachMedia(ch, gen);
       }
     };
     pc.onconnectionstatechange = () => {
@@ -135,7 +155,7 @@ export class StreamConnection {
         clearTimeout(this.disconnectTimer);
         this.disconnectTimer = setTimeout(() => {
           if (gen === this.gen && pc.connectionState !== 'connected') this.reattach('connection lost');
-        }, 2000);
+        }, 1500);
       }
     };
 
@@ -145,36 +165,57 @@ export class StreamConnection {
       smooth_bursts: !!this.settings.smooth,
       latency: Number(this.settings.latency ?? 1),
       expected_kbps: Number(this.settings.bitrate) || (Number(this.settings.height) >= 1080 ? 15000 : 10000),
+      fps: Number(this.settings.fps) || 60,
+      media_player: !!this.settings.mediaPlayer,
     });
     if (gen !== this.gen) { api.post('/api/peer/close', { id: offer.id }).catch(() => {}); return; }
     this.peerId = offer.id;
+    this.transport = offer.transport || 'rtp';
     await pc.setRemoteDescription({ type: 'offer', sdp: offer.sdp });
     const answer = await pc.createAnswer();
     answer.sdp = preferStereoOpus(answer.sdp);
     await pc.setLocalDescription(answer);
-    await gathered(pc, 700);
+    await gathered(pc, 500);
     if (gen !== this.gen) return;
     await api.post('/api/peer/answer', { id: offer.id, sdp: pc.localDescription.sdp });
   }
 
-  tuneReceiver(receiver) {
-    const lowest = Number(this.settings.latency) === 0;
-    try {
-      if ('jitterBufferTarget' in receiver) receiver.jitterBufferTarget = lowest ? 0 : null;
-      if ('playoutDelayHint' in receiver) receiver.playoutDelayHint = lowest ? 0 : null;
-    } catch { /* not supported */ }
+  attachMedia(ch, gen) {
+    const player = new LiveMediaPlayer(this.video);
+    this.player = player;
+    let opened = null;
+    const re = new MediaReassembler({
+      onInit: (header, init) => {
+        if (gen !== this.gen) return;
+        const go = async () => {
+          if (!opened || player.mime !== header.mime) await player.open(header.mime);
+          player.push(init);
+        };
+        opened = (opened || Promise.resolve()).then(go).catch((e) => this.onStatus?.('reconnecting', e.message));
+      },
+      onFragment: (frag) => {
+        if (gen !== this.gen || !opened) return;
+        opened.then(() => player.push(frag));
+      },
+    });
+    ch.onmessage = (m) => { this.mediaBytes += m.data.byteLength; re.feed(m.data); };
   }
 
-  play() {
-    const v = this.video;
-    v.muted = false;
-    const p = v.play();
+  tuneReceiver(receiver, kind) {
+    const mode = Number(this.settings.latency ?? 1);
+    try {
+      if ('jitterBufferTarget' in receiver) receiver.jitterBufferTarget = kind === 'audio' && mode === 0 ? 0 : JITTER_TARGET[mode];
+    } catch { /* older Safari */ }
+  }
+
+  play(el) {
+    el.muted = false;
+    const p = el.play();
     if (p?.catch) {
       p.catch(() => {
-        // Sound needs a tap on this device: keep the picture going muted meanwhile.
-        v.muted = true;
-        v.play().catch(() => {});
-        this.onStatus?.('needs-tap');
+        // Sound needs a touch on this device: keep the picture going muted meanwhile.
+        if (el === this.audio) this.onStatus?.('needs-tap');
+        else { el.muted = true; el.play().catch(() => {}); }
       });
     }
   }
@@ -191,12 +232,13 @@ export class StreamConnection {
     if (m.t === 'session') this.onSession?.(m);
     else if (m.t === 'renegotiate') this.reattach(m.reason || 'renegotiate');
     else if (m.t === 'pong') this.dcRtt = performance.now() - m.id;
+    else if (m.t === 'link') this.bridgeStats = m;
     else this.onControl?.(m);
   }
 
   onVisibility() {
     if (document.visibilityState !== 'visible' || !this.active) return;
-    // Back on screen: tell the bridge at once (it paused our stream while we were away),
+    // Back on screen: tell the bridge at once (it paused our stream while we were away)
     // and rebuild the connection if it didn't survive.
     this.sender.flush();
     const st = this.pc?.connectionState;
@@ -206,18 +248,8 @@ export class StreamConnection {
 
   watchFrames() {
     const v = this.video;
-    if (v.requestVideoFrameCallback) {
-      const cb = () => { this.lastFrameAt = performance.now(); this.framesSeen++; if (this.active) v.requestVideoFrameCallback(cb); };
-      v.requestVideoFrameCallback(cb);
-    } else {
-      let last = -1;
-      const poll = () => {
-        if (!this.active) return;
-        if (v.currentTime !== last) { last = v.currentTime; this.lastFrameAt = performance.now(); this.framesSeen++; }
-        requestAnimationFrame(poll);
-      };
-      requestAnimationFrame(poll);
-    }
+    const cb = () => { this.lastFrameAt = performance.now(); this.framesSeen++; if (this.active) v.requestVideoFrameCallback(cb); };
+    v.requestVideoFrameCallback(cb);
   }
 
   checkHealth() {
@@ -239,36 +271,41 @@ export class StreamConnection {
     try { report = await pc.getStats(); } catch { return; }
     let v = null, pair = null;
     report.forEach((s) => {
-      if (s.type === 'inbound-rtp' && (s.kind === 'video' || s.mediaType === 'video')) v = s;
-      if (s.type === 'candidate-pair' && s.state === 'succeeded' && (s.nominated || s.selected)) {
+      if (s.type === 'inbound-rtp' && s.kind === 'video') v = s;
+      if (s.type === 'candidate-pair' && s.state === 'succeeded' && s.nominated) {
         if (!pair || (s.bytesReceived || 0) > (pair.bytesReceived || 0)) pair = s;
       }
     });
-    if (!v) return;
     const now = performance.now();
     const p = this.prevStats;
     const out = {
-      width: v.frameWidth, height: v.frameHeight,
-      fps: v.framesPerSecond ?? 0,
+      transport: this.transport,
+      width: this.video.videoWidth, height: this.video.videoHeight,
       rttMs: pair?.currentRoundTripTime != null ? pair.currentRoundTripTime * 1000 : (this.dcRtt ?? null),
+      queueMs: this.bridgeStats?.queue_ms ?? null,
+      bufferMs: this.transport === 'mse' ? this.player?.lagMs ?? null : null,
     };
+    const frames = this.framesSeen;
     if (p) {
       const dt = (now - p.t) / 1000;
-      out.mbps = ((v.bytesReceived - p.bytes) * 8) / 1e6 / dt;
-      const recv = v.packetsReceived - p.recv, lost = Math.max(0, v.packetsLost - p.lost);
-      out.lossPct = recv + lost > 0 ? (lost / (recv + lost)) * 100 : 0;
-      out.nacks = (v.nackCount ?? 0) - (p.nacks ?? 0);
-      const emitted = (v.jitterBufferEmittedCount ?? 0) - (p.jbCount ?? 0);
-      out.bufferMs = emitted > 0 ? (((v.jitterBufferDelay ?? 0) - (p.jbDelay ?? 0)) / emitted) * 1000 : null;
-      const dec = (v.framesDecoded ?? 0) - (p.decoded ?? 0);
-      out.decodeMs = dec > 0 ? (((v.totalDecodeTime ?? 0) - (p.decodeTime ?? 0)) / dec) * 1000 : null;
-      out.dropped = (v.framesDropped ?? 0) - (p.dropped ?? 0);
-      if (!out.fps && dt > 0) out.fps = dec / dt;
+      out.fps = (frames - p.frames) / dt;
+      if (this.transport === 'mse') {
+        out.mbps = ((this.mediaBytes - p.media) * 8) / 1e6 / dt;
+        out.lossPct = this.bridgeStats?.loss_pct ?? 0;
+      } else if (v) {
+        out.mbps = ((v.bytesReceived - p.bytes) * 8) / 1e6 / dt;
+        const recv = v.packetsReceived - p.recv, lost = Math.max(0, v.packetsLost - p.lost);
+        out.lossPct = recv + lost > 0 ? (lost / (recv + lost)) * 100 : 0;
+        const emitted = (v.jitterBufferEmittedCount ?? 0) - (p.jbCount ?? 0);
+        out.bufferMs = emitted > 0 ? (((v.jitterBufferDelay ?? 0) - (p.jbDelay ?? 0)) / emitted) * 1000 : null;
+        const dec = (v.framesDecoded ?? 0) - (p.decoded ?? 0);
+        out.decodeMs = dec > 0 ? (((v.totalDecodeTime ?? 0) - (p.decodeTime ?? 0)) / dec) * 1000 : null;
+      }
     }
     this.prevStats = {
-      t: now, bytes: v.bytesReceived, recv: v.packetsReceived, lost: v.packetsLost, nacks: v.nackCount,
-      jbCount: v.jitterBufferEmittedCount, jbDelay: v.jitterBufferDelay, decoded: v.framesDecoded,
-      decodeTime: v.totalDecodeTime, dropped: v.framesDropped,
+      t: now, frames, media: this.mediaBytes, bytes: v?.bytesReceived ?? 0, recv: v?.packetsReceived ?? 0,
+      lost: v?.packetsLost ?? 0, jbCount: v?.jitterBufferEmittedCount, jbDelay: v?.jitterBufferDelay,
+      decoded: v?.framesDecoded, decodeTime: v?.totalDecodeTime,
     };
     out.quality = rate(out, Number(this.settings.fps) || 60);
     this.onStats?.(out);
@@ -276,10 +313,10 @@ export class StreamConnection {
 }
 
 function rate(s, targetFps) {
-  if (s.lossPct == null) return 'unknown';
-  const rtt = s.rttMs ?? 0;
-  if (s.lossPct < 1 && rtt < 20 && s.fps >= targetFps * 0.9) return 'good';
-  if (s.lossPct < 4 && rtt < 45 && s.fps >= targetFps * 0.7) return 'fair';
+  if (s.fps == null) return 'unknown';
+  const rtt = s.rttMs ?? 0, loss = s.lossPct ?? 0, q = s.queueMs ?? 0;
+  if (loss < 1 && rtt < 20 && q < 15 && s.fps >= targetFps * 0.9) return 'good';
+  if (loss < 4 && rtt < 45 && q < 40 && s.fps >= targetFps * 0.7) return 'fair';
   return 'poor';
 }
 
@@ -293,7 +330,7 @@ function gathered(pc, timeoutMs) {
   });
 }
 
-// The console sends stereo; make sure the phone decodes it as stereo.
+// The console sends stereo; make sure Safari decodes it as stereo.
 function preferStereoOpus(sdp) {
   const m = sdp.match(/a=rtpmap:(\d+) opus\/48000\/2/i);
   if (!m) return sdp;

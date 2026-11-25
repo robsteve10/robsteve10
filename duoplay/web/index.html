@@ -7,89 +7,153 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="DuoPlay">
-<meta name="theme-color" content="#091717">
+<meta name="theme-color" content="#061113">
+<meta name="color-scheme" content="dark">
 <meta name="format-detection" content="telephone=no">
 <title>DuoPlay</title>
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="apple-touch-icon" href="icons/icon-180.png">
 <link rel="icon" href="icons/icon-192.png">
+<!-- Launch images for both iPhone Duo screens (cover 466x678 pt, inside 669x951 pt, @3x) -->
+<link rel="apple-touch-startup-image" media="(device-width: 466px) and (device-height: 678px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)" href="splash/cover-portrait.png">
+<link rel="apple-touch-startup-image" media="(device-width: 466px) and (device-height: 678px) and (-webkit-device-pixel-ratio: 3) and (orientation: landscape)" href="splash/cover-landscape.png">
+<link rel="apple-touch-startup-image" media="(device-width: 669px) and (device-height: 951px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)" href="splash/inner-portrait.png">
+<link rel="apple-touch-startup-image" media="(device-width: 669px) and (device-height: 951px) and (-webkit-device-pixel-ratio: 3) and (orientation: landscape)" href="splash/inner-landscape.png">
+<style>
+  /* Launch screen: inlined so it paints in the very first frame, matching the splash image. */
+  html, body { margin: 0; height: 100%; background: #061113; }
+  #launch { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; background: #061113;
+    transition: opacity .42s ease, transform .42s cubic-bezier(.2,.8,.2,1); }
+  #launch.gone { opacity: 0; transform: scale(1.04); pointer-events: none; }
+  #launch .mark { position: relative; width: 132px; height: 132px; display: flex; gap: 10px; justify-content: center; align-items: center;
+    perspective: 600px; }
+  #launch .panel { width: 52px; height: 104px; border-radius: 12px; background: linear-gradient(160deg, #e9f6f4, #9fd4d2);
+    box-shadow: 0 10px 30px rgba(0,0,0,.45), inset 0 1px 0 rgba(255,255,255,.7); }
+  #launch .panel.r { transform-origin: -5px 50%; animation: unfold .7s cubic-bezier(.2,.9,.2,1) .05s both; }
+  #launch .seam { position: absolute; left: 50%; top: 14px; width: 2px; height: 104px; margin-left: -1px; border-radius: 2px;
+    background: linear-gradient(#1fb8cd00, #1fb8cd, #1fb8cd00); opacity: 0; animation: seam 1.2s ease .55s infinite; }
+  #launch .word { position: absolute; top: calc(50% + 86px); left: 0; right: 0; text-align: center; color: #cfe9e6;
+    font: 600 20px/1 -apple-system, "SF Pro Display", system-ui, sans-serif; letter-spacing: .02em; opacity: .0;
+    animation: fade .5s ease .35s forwards; }
+  @keyframes unfold { from { transform: rotateY(-178deg); } to { transform: rotateY(0); } }
+  @keyframes seam { 0% { opacity: 0; transform: scaleY(.2); } 40% { opacity: .9; transform: scaleY(1); } 100% { opacity: 0; transform: scaleY(1); } }
+  @keyframes fade { to { opacity: .92; } }
+  @media (prefers-reduced-motion: reduce) { #launch .panel.r, #launch .seam, #launch .word { animation: none; opacity: 1; } }
+</style>
 <link rel="stylesheet" href="app.css">
 </head>
-<body class="mode-setup">
+<body class="mode-home">
 
-<!-- ============================ Setup ============================ -->
-<main id="setup" class="setup">
-  <header class="setup-head">
-    <div class="brand"><span class="brand-mark"></span>DuoPlay</div>
-    <button class="icon-btn" id="btn-settings" aria-label="Settings">
-      <svg viewBox="0 0 24 24"><path d="M12 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7Zm8.6-2.4-.1-2.2 2-1.6-2-3.4-2.4.9a8 8 0 0 0-1.9-1.1L15.8 3h-3.9l-.4 2.6a8 8 0 0 0-1.9 1.1l-2.4-.9-2 3.4 2 1.6a8.2 8.2 0 0 0 0 2.2l-2 1.6 2 3.4 2.4-.9a8 8 0 0 0 1.9 1.1l.4 2.6h3.9l.4-2.6a8 8 0 0 0 1.9-1.1l2.4.9 2-3.4-2-1.6Z"/></svg>
-    </button>
+<div id="launch" aria-hidden="true">
+  <div class="mark"><div class="panel l"></div><div class="panel r"></div><div class="seam"></div></div>
+  <div class="word">DuoPlay</div>
+</div>
+
+<!-- ============================ Home ============================ -->
+<main id="home" class="home">
+  <header class="home-head">
+    <div class="brand"><span class="brand-mark"><i></i><i></i></span>DuoPlay</div>
+    <div class="head-actions">
+      <span class="screen-chip" id="screen-chip"></span>
+      <button class="icon-btn glass" id="btn-settings" aria-label="Settings">
+        <svg viewBox="0 0 24 24"><path d="M12 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7Zm8.6-2.4-.1-2.2 2-1.6-2-3.4-2.4.9a8 8 0 0 0-1.9-1.1L15.8 3h-3.9l-.4 2.6a8 8 0 0 0-1.9 1.1l-2.4-.9-2 3.4 2 1.6a8.2 8.2 0 0 0 0 2.2l-2 1.6 2 3.4 2.4-.9a8 8 0 0 0 1.9 1.1l.4 2.6h3.9l.4-2.6a8 8 0 0 0 1.9-1.1l2.4.9 2-3.4-2-1.6Z"/></svg>
+      </button>
+    </div>
   </header>
 
-  <section id="banner-https" class="card note" hidden>
-    <h3>Turn on controller support</h3>
-    <p>Safari only lets web pages use game controllers and keep the screen awake on a secure (HTTPS) page.
-       Install the bridge's certificate once:</p>
-    <ol>
-      <li><a id="link-ca" href="/duoplay-ca.cer">Download the certificate</a>, then open <b>Settings → Profile Downloaded</b> and install it.</li>
-      <li>Open <b>Settings → General → About → Certificate Trust Settings</b> and switch on <b>DuoPlay Local CA</b>.</li>
-      <li><a id="link-https" href="#">Open DuoPlay over HTTPS</a> and add that page to your Home Screen.</li>
-    </ol>
-    <button class="text-btn" data-dismiss="banner-https">Not now</button>
-  </section>
+  <div class="home-grid">
+    <div class="col-main">
+      <section class="card glass" id="card-consoles">
+        <div class="card-head">
+          <h2>Consoles</h2>
+          <button class="text-btn" id="btn-add-ip">Add by address</button>
+        </div>
+        <div id="console-list" class="console-list"></div>
+        <p class="hint" id="console-empty">Looking for consoles on your network… The PS5 needs to be on, or in rest mode with
+          <b>Stay Connected to the Internet</b> and <b>Enable Turning On PS5 from Network</b> switched on, and Remote Play enabled under
+          <b>Settings → System → Remote Play</b>.</p>
+      </section>
 
-  <section id="banner-home" class="card note" hidden>
-    <h3>Add DuoPlay to your Home Screen</h3>
-    <p>Tap <b>Share</b> → <b>Add to Home Screen</b>. It then opens full screen with no browser bars, so the
-       picture and controls get every pixel on both screens, and edge swipes can't navigate you away mid-game.</p>
-    <button class="text-btn" data-dismiss="banner-home">Got it</button>
-  </section>
-
-  <section id="step-psn" class="card" hidden>
-    <h2><span class="step">1</span>Link your PlayStation account</h2>
-    <p>The console only pairs with an account it knows. DuoPlay needs your account's numeric ID (not your password).</p>
-    <a id="psn-login" class="btn primary" target="_blank" rel="noopener">Sign in with PlayStation</a>
-    <p class="hint">After signing in you land on a mostly blank page. Copy its full address from the address bar and paste it here:</p>
-    <div class="row">
-      <input id="psn-redirect" type="url" placeholder="https://remoteplay.dl.playstation.net/…?code=…" autocomplete="off" autocapitalize="off" spellcheck="false">
-      <button id="psn-save" class="btn">Save</button>
+      <section class="card glass hero-demo" id="card-demo">
+        <div class="demo-art" aria-hidden="true"><span></span><span></span><span></span></div>
+        <div>
+          <h2>Try it without a console</h2>
+          <p>A small arena game runs in the picture area so you can try the controls, folding and unfolding, and the half-folded handheld mode.</p>
+          <button class="btn primary" id="btn-demo">Play the demo</button>
+        </div>
+      </section>
     </div>
-    <details>
-      <summary>I already know my account ID</summary>
-      <div class="row">
-        <input id="psn-id" placeholder="e.g. AbCdEfGh1234=" autocomplete="off" autocapitalize="off" spellcheck="false">
-        <button id="psn-id-save" class="btn">Save</button>
-      </div>
-    </details>
-    <p class="error" id="psn-error" hidden></p>
-  </section>
 
-  <section class="card">
-    <div class="card-head">
-      <h2 id="consoles-title">Consoles</h2>
-      <button class="text-btn" id="btn-add-ip">Add by IP</button>
+    <div class="col-side">
+      <section class="card glass note" id="card-bridgeless" hidden>
+        <h3>Connecting to your PS5</h3>
+        <p>Safari can't open the kind of network connection a PS5 uses for Remote Play, so a web page can't reach the console
+           by itself. The DuoPlay bridge runs on any always-on device at home and opens this same app from there, connected to
+           your console. This copy runs without one: the demo and HDR check work, console play doesn't.</p>
+      </section>
+
+      <section id="step-psn" class="card glass" hidden>
+        <h2><span class="step">1</span>Link your PlayStation account</h2>
+        <p>The console only pairs with an account it knows. DuoPlay needs your account's numeric ID, never your password.</p>
+        <a id="psn-login" class="btn primary" target="_blank" rel="noopener">Sign in with PlayStation</a>
+        <p class="hint">After signing in you land on a mostly blank page. Copy its full address and paste it here:</p>
+        <div class="row">
+          <input id="psn-redirect" type="url" placeholder="https://remoteplay.dl.playstation.net/…?code=…" autocomplete="off" autocapitalize="off" spellcheck="false">
+          <button id="psn-save" class="btn">Save</button>
+        </div>
+        <details>
+          <summary>I already know my account ID</summary>
+          <div class="row">
+            <input id="psn-id" placeholder="e.g. AbCdEfGh1234=" autocomplete="off" autocapitalize="off" spellcheck="false">
+            <button id="psn-id-save" class="btn">Save</button>
+          </div>
+        </details>
+        <p class="error" id="psn-error" hidden></p>
+      </section>
+
+      <section id="banner-install" class="card glass note" hidden>
+        <h3>Install DuoPlay</h3>
+        <p>Tap <b>Share</b>, then <b>Add to Home Screen</b>, and leave <b>Open as Web App</b> on. DuoPlay then launches full screen like
+           any app, on both screens, with no browser bars and no edge swipes that leave the game.</p>
+        <button class="text-btn" data-dismiss="banner-install">Got it</button>
+      </section>
+
+      <section id="banner-https" class="card glass note" hidden>
+        <h3>Turn on controllers and keep the screen awake</h3>
+        <p>Safari only allows Bluetooth controllers and screen wake lock on a secure page. Install the bridge's certificate once:</p>
+        <ol>
+          <li><a id="link-ca" href="/duoplay-ca.cer">Download the certificate</a>, then <b>Settings → Profile Downloaded → Install</b>.</li>
+          <li><b>Settings → General → About → Certificate Trust Settings</b>: switch on <b>DuoPlay Local CA</b>.</li>
+          <li><a id="link-https" href="#">Open DuoPlay securely</a> and add that page to the Home Screen.</li>
+        </ol>
+        <button class="text-btn" data-dismiss="banner-https">Not now</button>
+      </section>
+
+      <section class="card glass" id="card-hdr">
+        <h3>HDR</h3>
+        <p id="hdr-status">Checking this screen…</p>
+        <button class="btn" id="btn-hdr-check">Run the HDR check</button>
+      </section>
     </div>
-    <div id="console-list" class="console-list"></div>
-    <p class="hint" id="console-empty">Looking for consoles on your network… Make sure the PS5 is on (or in rest mode with
-      “Stay connected to the internet” and “Enable turning on PS5 from network” switched on) and Remote Play is enabled under
-      Settings → System → Remote Play.</p>
-  </section>
+  </div>
 
   <p class="footer-note" id="footer-note"></p>
 </main>
 
-<!-- ============================ Stream ============================ -->
+<!-- ============================ Stage ============================ -->
 <div id="stage" class="stage" hidden>
   <div id="video-box" class="video-box">
     <video id="video" playsinline webkit-playsinline autoplay muted disablepictureinpicture></video>
+    <canvas id="demo-canvas" hidden></canvas>
   </div>
+  <audio id="audio" autoplay></audio>
   <div id="controls" class="controls" aria-hidden="true"></div>
 
   <div id="hud" class="hud" hidden></div>
-  <div id="toast" class="toast" hidden></div>
+  <div id="toast" class="toast glass" hidden></div>
 
   <div id="overlay" class="overlay" hidden>
-    <div class="overlay-card">
+    <div class="overlay-card glass">
       <div class="spinner" id="overlay-spinner"></div>
       <h3 id="overlay-title">Connecting…</h3>
       <p id="overlay-text"></p>
@@ -98,7 +162,6 @@
         <button id="login-pin-send" class="btn primary">OK</button>
       </div>
       <div class="overlay-actions">
-        <button id="overlay-sound" class="btn primary" hidden>Tap for sound</button>
         <button id="overlay-retry" class="btn" hidden>Retry</button>
         <button id="overlay-leave" class="btn ghost">Back</button>
       </div>
@@ -109,7 +172,7 @@
 <!-- ============================ Sheets ============================ -->
 <div id="sheet" class="sheet" hidden>
   <div class="sheet-scrim" data-close-sheet></div>
-  <div class="sheet-panel" role="dialog" aria-modal="true">
+  <div class="sheet-panel glass" role="dialog" aria-modal="true">
     <div class="sheet-grip"></div>
     <div id="sheet-body"></div>
   </div>
@@ -118,45 +181,54 @@
 <template id="tpl-menu">
   <h2>Menu</h2>
   <div class="menu-grid">
-    <button class="tile" data-act="ps"><b>PS</b><span>Home screen</span></button>
+    <button class="tile" data-act="ps"><b>PS</b><span>Console home screen</span></button>
     <button class="tile" data-act="stats"><b>Stats</b><span>Network overlay</span></button>
-    <button class="tile" data-act="controls"><b>Controls</b><span>Show / hide</span></button>
+    <button class="tile" data-act="controls"><b>Controls</b><span>Show or hide</span></button>
     <button class="tile" data-act="settings"><b>Settings</b><span>Quality &amp; layout</span></button>
-    <button class="tile" data-act="rest"><b>Rest mode</b><span>Put console to sleep</span></button>
-    <button class="tile danger" data-act="leave"><b>Disconnect</b><span>Leave stream</span></button>
+    <button class="tile" data-act="rest" data-console-only><b>Rest mode</b><span>Put the console to sleep</span></button>
+    <button class="tile danger" data-act="leave"><b>Leave</b><span>Back to DuoPlay</span></button>
   </div>
   <p class="hint" id="menu-net"></p>
 </template>
 
 <template id="tpl-settings">
   <h2>Settings</h2>
-  <h4>Stream quality</h4>
+  <h4>Picture</h4>
+  <label class="field">Picture
+    <select id="set-picture" data-set="picture"><option value="standard">Standard: lowest latency</option><option value="hdr">HDR: brighter, a little more latency</option></select>
+  </label>
   <label class="field">Resolution
-    <select data-set="height"><option value="1080">1080p</option><option value="720">720p</option><option value="540">540p</option></select>
+    <select id="set-height" data-set="height"><option value="1080">1080p</option><option value="720">720p</option><option value="540">540p</option></select>
   </label>
   <label class="field">Frame rate
-    <select data-set="fps"><option value="60">60 fps</option><option value="30">30 fps</option></select>
+    <select id="set-fps" data-set="fps"><option value="60">60 fps</option><option value="30">30 fps</option></select>
   </label>
   <label class="field">Bitrate
-    <select data-set="bitrate"><option value="0">Auto</option><option value="6000">6 Mbps</option><option value="10000">10 Mbps</option>
+    <select id="set-bitrate" data-set="bitrate"><option value="0">Auto</option><option value="6000">6 Mbps</option><option value="10000">10 Mbps</option>
       <option value="15000">15 Mbps</option><option value="20000">20 Mbps</option><option value="25000">25 Mbps</option><option value="30000">30 Mbps</option></select>
   </label>
-  <label class="field">Video codec
-    <select data-set="codec"><option value="h264">H.264 (most compatible)</option><option value="hevc">H.265 (sharper on Wi-Fi)</option></select>
-  </label>
   <h4>Wi-Fi</h4>
-  <label class="field">Latency
-    <select data-set="latency"><option value="0">Lowest (no buffering)</option><option value="1">Balanced</option><option value="2">Smooth (weak Wi-Fi)</option></select>
+  <label class="field">Buffering
+    <select id="set-latency" data-set="latency"><option value="0">None: lowest latency</option><option value="1">Balanced</option><option value="2">Smooth: for weak Wi-Fi</option></select>
   </label>
-  <label class="switch"><input type="checkbox" data-set="adaptive"><span>Adapt bitrate to Wi-Fi conditions</span></label>
-  <label class="switch"><input type="checkbox" data-set="smooth"><span>Smooth out keyframe bursts</span></label>
-  <h4>Controls (<span data-screen-label></span>)</h4>
-  <p class="hint">Size and opacity are remembered separately for the cover screen and the inside screen.</p>
-  <label class="field">Size <input type="range" min="0.7" max="1.4" step="0.05" data-set="ctlScale"></label>
-  <label class="field">Opacity <input type="range" min="0.15" max="1" step="0.05" data-set="ctlOpacity"></label>
-  <label class="switch"><input type="checkbox" data-set="hideWithPad"><span>Hide touch controls while a controller is in use</span></label>
-  <label class="switch"><input type="checkbox" data-set="showStats"><span>Show network stats</span></label>
-  <p class="hint">Quality changes apply the next time you connect.</p>
+  <label class="switch"><input id="set-adaptive" type="checkbox" data-set="adaptive"><span>Let the console lower its bitrate when Wi-Fi struggles</span></label>
+  <label class="switch"><input id="set-smooth" type="checkbox" data-set="smooth"><span>Smooth out keyframe bursts</span></label>
+  <h4>Controls on the <span data-screen-label></span></h4>
+  <label class="field">Size <input id="set-scale" type="range" min="0.7" max="1.3" step="0.05" data-set="ctlScale"></label>
+  <label class="field">Opacity <input id="set-opacity" type="range" min="0.15" max="1" step="0.05" data-set="ctlOpacity"></label>
+  <label class="switch"><input id="set-haptics" type="checkbox" data-set="haptics"><span>Haptic tick on button presses</span></label>
+  <label class="switch"><input id="set-hidepad" type="checkbox" data-set="hideWithPad"><span>Hide touch controls while a controller is in use</span></label>
+  <label class="switch"><input id="set-stats" type="checkbox" data-set="showStats"><span>Show network stats</span></label>
+  <p class="hint">Picture and quality changes apply the next time you connect.</p>
+  <button class="btn" data-close-sheet>Done</button>
+</template>
+
+<template id="tpl-hdr">
+  <h2>HDR check</h2>
+  <p class="hint">Compare the bars with the white tile on the left. On a working HDR path, the bars on the right glow clearly
+     brighter than that white, the way sunlight or neon looks in an HDR game.</p>
+  <video id="hdr-video" class="hdr-video" playsinline muted loop autoplay src="media/hdr-check.mp4"></video>
+  <p class="hint" id="hdr-verdict"></p>
   <button class="btn" data-close-sheet>Done</button>
 </template>
 

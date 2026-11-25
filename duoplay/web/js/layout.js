@@ -1,20 +1,21 @@
-// Fold-aware layout engine.
+// Layout engine for the iPhone Duo.
 //
-// The same page runs on the cover screen (a normal tall phone shape) and the inside
-// screen (close to square). Rather than hard-coding either screen's size, every
-// layout is derived from the live viewport, so it is right for any shape, either
-// orientation, and the half-folded "tabletop" posture when the browser reports a hinge.
+// Arrangements (all computed from the live window, so Split View or a Safari tab with
+// toolbars works too):
+//   cover · portrait     picture on top, the whole controller below it
+//   cover · landscape    picture across the top, controls at the sides (overlaid)
+//   inside · portrait    "handheld": picture on the top half, controller on the bottom
+//                        half, nothing on the fold. Half-fold it like a laptop and it
+//                        becomes a pocket console.
+//   inside · landscape   picture across the top, controls in the corners; the small
+//                        centre buttons step aside so nothing sits on the crease
+//   Split View           compact version of the cover layout
 //
-// Principles:
-//  * Controls keep the same *physical* size on both screens: thumbs don't grow when
-//    the phone unfolds. Sizes are CSS px (≈ constant physical size on iPhone), only
-//    shrunk when a screen is too small to fit them.
-//  * When there is room beside or below the picture, controls go there and cover
-//    nothing; they only overlay the picture when there is no other choice.
-//  * The computation is pure and cheap, so it runs inside a ResizeObserver callback,
-//    i.e. after layout but before paint: the new arrangement appears in the very
-//    first frame drawn on the new screen. Nothing is re-created; the <video> and the
-//    WebRTC connection never notice.
+// Controls keep one physical size on both screens (points are the same physical size
+// on both panels) and only shrink when a window is too small to fit them.
+//
+// Everything here is pure arithmetic so it can run inside a ResizeObserver callback,
+// before the browser paints the first frame on the new screen.
 
 export const BTN = {
   CROSS: 1 << 0, CIRCLE: 1 << 1, SQUARE: 1 << 2, TRIANGLE: 1 << 3,
@@ -23,72 +24,57 @@ export const BTN = {
   OPTIONS: 1 << 12, CREATE: 1 << 13, TOUCHPAD: 1 << 14, PS: 1 << 15,
 };
 
-// Base sizes in CSS px at scale 1.
+// Base sizes in points at scale 1.
 const S = { stick: 128, dpad: 126, faces: 140, shW: 60, shH: 38, small: 40, tpW: 104, tpH: 36, gap: 14, margin: 14 };
-
-// Long/short side ratio below which a screen is "inner" (tablet-like). Phone-shaped
-// screens are ~2.0-2.4, folding phones' inside screens ~1.1-1.45.
-const INNER_MAX_ASPECT = 1.6;
-
-export function classify(w, h) {
-  const aspect = Math.max(w, h) / Math.max(1, Math.min(w, h));
-  return {
-    screen: aspect < INNER_MAX_ASPECT ? 'inner' : 'cover',
-    orient: w >= h ? 'landscape' : 'portrait',
-    aspect,
-  };
-}
+const CREASE_CLEARANCE = 14; // extra points kept free on each side of the fold
 
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
 /**
  * @param {object} p
- * @param {number} p.width, p.height     stage size (CSS px)
- * @param {{t,r,b,l}} p.safe             safe-area insets
- * @param {number} p.videoAspect         stream width / height (16:9 for the PS5)
- * @param {number} p.userScale           per-screen size preference
- * @param {Array<DOMRect>|null} p.segments viewport segments when the browser reports a fold
- * @returns layout: { screen, orient, mode, scale, video:{x,y,w,h}, items:{...} }
+ * @param {number} p.width, p.height   window size (CSS px = points)
+ * @param {{t,r,b,l}} p.safe            safe-area insets
+ * @param {number} p.videoAspect        stream width / height
+ * @param {number} p.userScale          size preference for this screen
+ * @param {object} p.display            from display.js
  */
 export function computeLayout(p) {
-  const { width: W0, height: H0, safe, videoAspect: va = 16 / 9, userScale = 1 } = p;
-  const cls = classify(W0, H0);
-  const R = { x: safe.l, y: safe.t, w: Math.max(1, W0 - safe.l - safe.r), h: Math.max(1, H0 - safe.t - safe.b) };
+  const { width: W, height: H, safe, videoAspect: va = 16 / 9, userScale = 1, display: d } = p;
+  const R = { x: safe.l, y: safe.t, w: Math.max(1, W - safe.l - safe.r), h: Math.max(1, H - safe.t - safe.b) };
+  const base = { screen: d.screen, orient: d.orient, split: d.split, crease: d.crease };
 
-  // Half-folded with the hinge across the middle: picture on the top half, pad on the bottom half.
-  const segs = p.segments;
-  if (segs && segs.length === 2 && Math.abs(segs[0].left - segs[1].left) < 2 && segs[1].top > segs[0].top) {
-    const top = segs[0], bottom = segs[1];
-    const vrect = { x: R.x, y: Math.max(R.y, top.top), w: R.w, h: top.bottom - Math.max(R.y, top.top) };
-    const video = fit(vrect, va, 'center');
-    const panel = { x: R.x, y: bottom.top, w: R.w, h: R.y + R.h - bottom.top };
-    const s = userScale * clamp(Math.min(panel.w, panel.h) / 380, 0.75, 1.1);
-    return finish({ ...cls, mode: 'tabletop', video, items: layoutPanel(panel, s), scale: s });
+  // Handheld: inside screen in portrait (flat or half-folded like a laptop).
+  const stackedFold = d.crease && d.crease.axis === 'y';
+  if (stackedFold) {
+    const c = d.crease;
+    const gapHalf = c.half + CREASE_CLEARANCE;
+    const top = { x: R.x, y: R.y, w: R.w, h: c.at - gapHalf - R.y };
+    const bottom = { x: R.x, y: c.at + gapHalf, w: R.w, h: R.y + R.h - (c.at + gapHalf) };
+    if (top.h > 120 && bottom.h > 240) {
+      const video = fit(top, va, 'center');
+      const items = layoutPanel(bottom, userScale);
+      return finish({ ...base, mode: d.folded ? 'tabletop' : 'handheld', video, items, scale: items._s });
+    }
   }
 
-  if (cls.orient === 'portrait') {
+  if (d.orient === 'portrait') {
     const video = { x: R.x, y: R.y, w: R.w, h: R.w / va };
     const panel = { x: R.x, y: R.y + video.h, w: R.w, h: R.h - video.h };
-    if (panel.h >= 220) {
-      const s = userScale * clamp(R.w / 390, 0.78, 1.12);
-      const items = layoutPanel(panel, s);
-      // Spare height goes above the picture (a little) and between picture and pad
-      // (mostly), so the picture sits near the thumbs' line of sight instead of
-      // stranded at the top with a dead gap under it.
-      const top = Math.min(...Object.values(items).map((r) => r.y));
-      const spare = top - (video.y + video.h) - S.gap * s;
+    if (panel.h >= 230) {
+      const items = layoutPanel(panel, userScale);
+      // Spare height goes mostly between picture and pad, so the picture sits close
+      // to where the eyes already are instead of stranded at the top edge.
+      const top = Math.min(...Object.values(items).filter((r) => r && r.w).map((r) => r.y));
+      const spare = top - (video.y + video.h) - S.gap * items._s;
       if (spare > 0) video.y += spare * 0.45;
-      return finish({ ...cls, mode: 'stacked', video, items, scale: s });
+      return finish({ ...base, mode: 'stacked', video, items, scale: items._s });
     }
-    // Very short portrait window (e.g. a split-screen sliver): fall through to overlay.
   }
 
   // Landscape (or a portrait window too short to stack).
-  let s = userScale * clamp(Math.min(R.w, R.h) / 380, 0.78, 1.12);
-  const needH = (S.shH + S.dpad + S.stick + S.gap * 2.2) + (2 * S.margin) / s;
-  s = Math.min(s, R.h / needH);
-  s = Math.max(s, 0.55);
-
+  let s = userScale;
+  const needH = S.shH + Math.max(S.dpad, S.faces) + S.stick + S.gap * 2.2;
+  s = Math.max(0.55, Math.min(s, (R.h - 2 * S.margin) / needH));
   const vw = Math.min(R.w, R.h * va);
   const gutter = (R.w - vw) / 2;
   const clusterW = Math.max(S.dpad, S.stick, S.faces) * s + 2 * S.margin;
@@ -96,24 +82,15 @@ export function computeLayout(p) {
     const video = { x: R.x + gutter, y: R.y + (R.h - vw / va) / 2, w: vw, h: vw / va };
     const left = { x: R.x, y: R.y, w: gutter, h: R.h };
     const right = { x: R.x + R.w - gutter, y: R.y, w: gutter, h: R.h };
-    return finish({ ...cls, mode: 'split', video, items: layoutSides(R, left, right, s, true), scale: s });
+    return finish({ ...base, mode: 'split', video, items: layoutSides(R, left, right, s, true, d.crease), scale: s });
   }
-
-  // Overlay. If the screen is taller than 16:9 (the inside screen), park the picture at
-  // the top so the spare band at the bottom takes the sticks and covers less of the game.
+  // Taller than 16:9 (both Duo screens are): picture at the top, sticks in the band below.
   const tall = R.w / R.h < va;
   const video = fit(R, va, tall ? 'top' : 'center');
-  const sideW = Math.min(R.w * 0.36, (S.dpad / 2 + S.stick * 0.75 + S.stick / 2) * s + S.margin * 2);
+  const sideW = Math.min(R.w * 0.36, (S.dpad / 2 + S.stick * 0.78 + S.stick / 2) * s + S.margin * 2);
   const left = { x: R.x, y: R.y, w: sideW, h: R.h };
   const right = { x: R.x + R.w - sideW, y: R.y, w: sideW, h: R.h };
-  return finish({ ...cls, mode: 'overlay', video, items: layoutSides(R, left, right, s, false), scale: s });
-}
-
-// The upper button cluster may tuck down beside the stick only once the two are far
-// enough apart sideways that their touch areas can't collide.
-function diagonalOverlap(dx, upper, stick, gap) {
-  const clear = (upper + stick) / 2 + gap * 0.5;
-  return dx >= clear ? Math.min(stick * 0.35, dx - clear + stick * 0.2) : 0;
+  return finish({ ...base, mode: 'overlay', video, items: layoutSides(R, left, right, s, false, d.crease), scale: s });
 }
 
 function fit(rect, va, anchor) {
@@ -124,14 +101,19 @@ function fit(rect, va, anchor) {
   return { x, y, w, h };
 }
 
-function sq(cx, cy, d) { return { x: cx - d / 2, y: cy - d / 2, w: d, h: d }; }
-function box(cx, cy, w, h) { return { x: cx - w / 2, y: cy - h / 2, w, h }; }
+const sq = (cx, cy, d) => ({ x: cx - d / 2, y: cy - d / 2, w: d, h: d });
+const box = (cx, cy, w, h) => ({ x: cx - w / 2, y: cy - h / 2, w, h });
 
-// Landscape: one cluster per side. Sticks sit at the bottom where thumbs rest, the
-// d-pad / face buttons above-outside them (DualSense geometry), shoulders above those.
-// Clusters are anchored to the bottom, so on the tall inside screen nothing drifts
-// up out of thumb reach.
-function layoutSides(R, left, right, s, vertical) {
+// The upper cluster may tuck down beside the stick only once they are far enough
+// apart sideways that their touch areas can't collide.
+function diagonalOverlap(dx, upper, stick, gap) {
+  const clear = (upper + stick) / 2 + gap * 0.5;
+  return dx >= clear ? Math.min(stick * 0.35, dx - clear + stick * 0.2) : 0;
+}
+
+// Landscape: one cluster per side, sticks low where thumbs rest, d-pad / face buttons
+// above and outside them, shoulders above those.
+function layoutSides(R, left, right, s, vertical, crease) {
   const m = S.margin, g = S.gap * s;
   const st = S.stick * s, dp = S.dpad * s, fc = S.faces * s;
   const items = {};
@@ -157,7 +139,6 @@ function layoutSides(R, left, right, s, vertical) {
   items.dpad = sq(dpadCx, upperCy, dp);
   items.faces = sq(facesCx, upperCy, fc);
 
-  // Shoulders: one row just above the upper buttons (never above the safe top).
   const shY = Math.max(R.y + m, upperCy - Math.max(dp, fc) / 2 - g - S.shH * s);
   const shw = S.shW * s, shh = S.shH * s;
   const lOuter = Math.min(left.x + m, dpadCx - dp / 2);
@@ -167,31 +148,52 @@ function layoutSides(R, left, right, s, vertical) {
   items.r2 = { x: rOuter - shw, y: shY, w: shw, h: shh };
   items.r1 = { x: rOuter - 2 * shw - 6 * s, y: shY, w: shw, h: shh };
 
-  // Rarely used buttons along the top centre, small, out of the action.
-  const cx = R.x + R.w / 2, top = R.y + m * 0.5;
+  // Rarely used buttons along the top, small and out of the action.
   const sm = S.small * s * 0.9;
-  items.touchpad = box(cx, top + S.tpH * s * 0.5, S.tpW * s, S.tpH * s * 0.85);
-  items.create = sq(cx - S.tpW * s / 2 - 8 * s - sm / 2, top + S.tpH * s * 0.5, sm);
-  items.options = sq(cx + S.tpW * s / 2 + 8 * s + sm / 2, top + S.tpH * s * 0.5, sm);
-  items.ps = sq(cx - sm * 0.65, top + S.tpH * s + 6 * s + sm / 2, sm);
-  items.menu = sq(cx + sm * 0.65, top + S.tpH * s + 6 * s + sm / 2, sm);
+  const tpW = S.tpW * s, tpH = S.tpH * s * 0.85;
+  const rowCy = R.y + m * 0.5 + S.tpH * s * 0.5;
+  const row2Cy = rowCy + S.tpH * s * 0.5 + 6 * s + sm / 2;
+  if (crease && crease.axis === 'x') {
+    // The fold runs down the middle: build the group on either side of it.
+    const lEdge = crease.at - crease.half - CREASE_CLEARANCE;
+    const rEdge = crease.at + crease.half + CREASE_CLEARANCE;
+    items.touchpad = box(lEdge - tpW / 2, rowCy, tpW, tpH);
+    items.create = sq(lEdge - tpW - 8 * s - sm / 2, rowCy, sm);
+    items.options = sq(rEdge + sm / 2, rowCy, sm);
+    items.ps = sq(rEdge + sm * 1.5 + 8 * s, rowCy, sm);
+    items.menu = sq(rEdge + sm * 2.5 + 16 * s, rowCy, sm);
+  } else {
+    const cx = R.x + R.w / 2;
+    items.touchpad = box(cx, rowCy, tpW, tpH);
+    items.create = sq(cx - tpW / 2 - 8 * s - sm / 2, rowCy, sm);
+    items.options = sq(cx + tpW / 2 + 8 * s + sm / 2, rowCy, sm);
+    items.ps = sq(cx - sm * 0.65, row2Cy, sm);
+    items.menu = sq(cx + sm * 0.65, row2Cy, sm);
+  }
   return items;
 }
 
-// Below the picture (portrait) or on the lower half (tabletop): a handheld layout
-// anchored to the bottom edge, spreading out sideways as far as the width allows.
-function layoutPanel(P, s0) {
+// A handheld controller inside a rectangle (below the picture, or the lower half of
+// the inside screen): anchored to the bottom edge, spreading sideways as width allows.
+function layoutPanel(P, userScale) {
   const m = S.margin;
-  // Fit height: centre row + shoulders + upper buttons + sticks
-  const need = S.small + S.shH + S.dpad + S.stick + S.gap * 3.2;
-  let s = Math.min(s0, (P.h - m * 2) / need);
+  const upperMax = Math.max(S.dpad, S.faces);
+  const needRow = S.small + S.shH + upperMax + S.stick + S.gap * 3.2; // centre buttons on their own row
+  const needInline = S.shH + upperMax + S.stick + S.gap * 2.6;        // centre buttons between the shoulders
+  const fitW = (P.w - m * 2) / (S.dpad + S.faces + S.small + 24);
+  // Room between L1 and R1 for a slim touchpad flanked by Create / Options?
+  const inlineFits = (k) => P.w - 2 * (m + 2 * S.shW * k + 16 * k) >= 64 * k + 2 * (S.small * 0.85 * k + 6 * k);
+  let s = Math.min(userScale, (P.h - m * 2) / needRow, fitW);
+  const sInline = Math.min(userScale, (P.h - m * 2) / needInline, fitW);
+  if (inlineFits(sInline)) s = sInline;
   s = Math.max(s, 0.5);
+  const inline = inlineFits(s);
   const g = S.gap * s, st = S.stick * s, dp = S.dpad * s, fc = S.faces * s;
   const shw = S.shW * s, shh = S.shH * s, sm = S.small * s;
   const items = {};
 
   const half = P.w / 2;
-  const sideAvail = half - m - (S.small * s) / 2 - 6 * s; // keep a centre lane for PS/menu
+  const sideAvail = half - m - sm / 2 - 6 * s; // keep a centre lane for PS / menu
   const dx = clamp(sideAvail - dp / 2 - st / 2, 0, st * 0.8);
   const dpadCx = P.x + m + dp / 2;
   const facesCx = P.x + P.w - m - fc / 2;
@@ -209,26 +211,38 @@ function layoutPanel(P, s0) {
   items.r2 = { x: P.x + P.w - m - shw, y: shY, w: shw, h: shh };
   items.r1 = { x: P.x + P.w - m - 2 * shw - 6 * s, y: shY, w: shw, h: shh };
 
-  // Create / touchpad / options: between the shoulder pairs if there is room, else a row above.
+  // Create / touchpad / options between the shoulder pairs when they fit (narrowing
+  // the touchpad if need be), else on a row of their own above.
   const cx = P.x + P.w / 2;
-  const centreW = S.tpW * s + 2 * (sm + 8 * s);
   const between = (items.r1.x - 10 * s) - (items.l1.x + shw + 10 * s);
-  const rowCy = between >= centreW ? shY + shh / 2 : shY - g * 0.6 - S.tpH * s / 2;
-  items.touchpad = box(cx, rowCy, S.tpW * s, S.tpH * s);
-  items.create = sq(cx - S.tpW * s / 2 - 8 * s - sm / 2, rowCy, sm);
-  items.options = sq(cx + S.tpW * s / 2 + 8 * s + sm / 2, rowCy, sm);
+  if (inline) {
+    const csm = Math.min(sm, S.small * 0.85 * s + (between > S.tpW * s + 2 * (sm + 8 * s) ? sm : 0));
+    const gap = 6 * s;
+    const tpW = Math.min(S.tpW * s, between - 2 * (csm + gap));
+    const rowCy = shY + shh / 2;
+    items.touchpad = box(cx, rowCy, tpW, Math.min(S.tpH * s, shh));
+    items.create = sq(cx - tpW / 2 - gap - csm / 2, rowCy, csm);
+    items.options = sq(cx + tpW / 2 + gap + csm / 2, rowCy, csm);
+  } else {
+    const rowCy = shY - g * 0.6 - S.tpH * s / 2;
+    items.touchpad = box(cx, rowCy, S.tpW * s, S.tpH * s);
+    items.create = sq(cx - S.tpW * s / 2 - 8 * s - sm / 2, rowCy, sm);
+    items.options = sq(cx + S.tpW * s / 2 + 8 * s + sm / 2, rowCy, sm);
+  }
   // PS between the sticks like on the pad; the app menu just above it.
   items.ps = sq(cx, stickCy + st * 0.12, sm);
   items.menu = sq(cx, stickCy - st * 0.32, sm * 0.9);
+  Object.defineProperty(items, '_s', { value: s, enumerable: false });
   return items;
 }
 
 function finish(l) {
-  // round to device pixels to keep borders crisp
   const dpr = (typeof devicePixelRatio === 'number' && devicePixelRatio) || 1;
   const r = (v) => Math.round(v * dpr) / dpr;
   const rr = (o) => ({ x: r(o.x), y: r(o.y), w: r(o.w), h: r(o.h) });
   l.video = rr(l.video);
-  for (const k of Object.keys(l.items)) l.items[k] = rr(l.items[k]);
+  const items = {};
+  for (const k of Object.keys(l.items)) items[k] = rr(l.items[k]);
+  l.items = items;
   return l;
 }

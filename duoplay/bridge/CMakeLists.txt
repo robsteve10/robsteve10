@@ -32,6 +32,8 @@ add_executable(duoplay-bridge
 	src/streamer.cpp
 	src/media.cpp
 	src/peer.cpp
+	src/wifilink.cpp
+	src/fmp4.cpp
 	src/api.cpp
 	src/tls.cpp
 	src/psn.cpp
