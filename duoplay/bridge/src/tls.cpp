@@ -9,6 +9,7 @@
 #include <openssl/x509v3.h>
 
 #include <algorithm>
+#include <ctime>
 #include <memory>
 
 namespace duo {
@@ -98,6 +99,12 @@ EVP_PKEY *readKey(const std::string &path) {
 
 bool ensureTls(const std::string &dirIn, const std::vector<std::string> &ipsIn, const std::string &hostname,
                TlsFiles &out, std::string &err) {
+	// A Raspberry Pi has no clock battery: until it has fetched the time it believes it is 1970,
+	// and certificates made then would look expired for decades. Better no HTTPS for now.
+	if (time(nullptr) < 1735689600) { // 2025-01-01
+		err = "the clock isn't set yet (no network time)";
+		return false;
+	}
 	std::string dir = joinPath(dirIn, "tls");
 	makeDirs(dir);
 	out.caCertPem = joinPath(dir, "duoplay-ca.pem");
@@ -110,6 +117,11 @@ bool ensureTls(const std::string &dirIn, const std::vector<std::string> &ipsIn, 
 	// --- CA: created once and kept, so the phone only has to trust it once ---
 	PKey caKey(readKey(caKeyPath), EVP_PKEY_free);
 	Cert ca(readCert(out.caCertPem), X509_free);
+	if (ca && (X509_cmp_time(X509_get0_notAfter(ca.get()), nullptr) <= 0 ||
+	           X509_cmp_time(X509_get0_notBefore(ca.get()), nullptr) >= 0)) {
+		LOGW("tls", "The local certificate authority is out of date (was the clock wrong?); making a new one");
+		ca.reset();
+	}
 	if (!caKey || !ca) {
 		caKey = newKey();
 		if (!caKey) {
@@ -145,6 +157,8 @@ bool ensureTls(const std::string &dirIn, const std::vector<std::string> &ipsIn, 
 	std::sort(ips.begin(), ips.end());
 	ips.erase(std::unique(ips.begin(), ips.end()), ips.end());
 	std::string san = "DNS:localhost,DNS:" + hostname + ",DNS:" + hostname + ".local";
+	if (hostname != "duoplay")
+		san += ",DNS:duoplay.local"; // the name the bridge answers over mDNS
 	for (const auto &ip : ips)
 		san += ",IP:" + ip;
 
@@ -153,7 +167,8 @@ bool ensureTls(const std::string &dirIn, const std::vector<std::string> &ipsIn, 
 	PKey existingKey(readKey(out.keyPem), EVP_PKEY_free);
 	if (existing && existingKey && readFile(metaPath, meta) && meta == san) {
 		// still valid for at least another month?
-		if (X509_cmp_time(X509_get0_notAfter(existing.get()), nullptr) > 0) {
+		if (X509_cmp_time(X509_get0_notAfter(existing.get()), nullptr) > 0 &&
+		    X509_cmp_time(X509_get0_notBefore(existing.get()), nullptr) < 0) {
 			ASN1_TIME *soon = X509_gmtime_adj(nullptr, 30L * 24 * 3600);
 			bool fresh = ASN1_TIME_compare(X509_get0_notAfter(existing.get()), soon) > 0;
 			ASN1_TIME_free(soon);

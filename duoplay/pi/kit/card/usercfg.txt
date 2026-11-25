@@ -1,0 +1,8 @@
+# DuoPlay. Alpine's config.txt includes this file.
+
+# The Pi Zero W's Wi-Fi and Bluetooth share one radio and one antenna. With Bluetooth off,
+# Wi-Fi gets all of it: fewer stalls in the picture.
+dtoverlay=disable-bt
+
+# No screen needed.
+disable_splash=1

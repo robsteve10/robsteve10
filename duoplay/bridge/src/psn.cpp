@@ -86,6 +86,14 @@ bool psnAccountIdFromRedirect(const std::string &redirectUrl, std::string &out, 
 
 	httplib::SSLClient cli(kAuthHost, 443);
 	cli.enable_server_certificate_verification(true);
+	// A static build can't know where this system keeps its CA certificates; look in the usual places.
+	for (const char *bundle : {"/etc/ssl/certs/ca-certificates.crt", "/etc/pki/tls/certs/ca-bundle.crt", "/etc/ssl/cert.pem"}) {
+		std::string probe;
+		if (readFile(bundle, probe) && !probe.empty()) {
+			cli.set_ca_cert_path(bundle, "/etc/ssl/certs");
+			break;
+		}
+	}
 	cli.set_connection_timeout(10);
 	cli.set_read_timeout(15);
 	cli.set_basic_auth(kClientId, kClientSecret);

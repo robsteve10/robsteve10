@@ -39,7 +39,12 @@ for (const [name, w, h, safe, disp, mode] of CASES) {
     assert.equal(l.mode, mode, 'arrangement');
     const R = { x: safe.l, y: safe.t, w: w - safe.l - safe.r, h: h - safe.t - safe.b };
     const inside = (r) => r.x >= R.x - 0.5 && r.y >= R.y - 0.5 && r.x + r.w <= R.x + R.w + 0.5 && r.y + r.h <= R.y + R.h + 0.5;
-    assert.ok(inside(l.video), `picture inside the safe area ${JSON.stringify(l.video)}`);
+    const onScreen = (r) => r.x >= -0.5 && r.y >= -0.5 && r.x + r.w <= w + 0.5 && r.y + r.h <= h + 0.5;
+    assert.ok(onScreen(l.video), `picture on screen ${JSON.stringify(l.video)}`);
+    // Full bleed: the picture runs to the screen's edges, under the status area, rather
+    // than stopping at the safe area like the controls do.
+    if (mode === 'stacked' || mode === 'handheld' || mode === 'tabletop' || mode === 'overlay')
+      assert.ok(l.video.x <= 0.5 && l.video.w >= w - 1, `picture edge to edge (${l.video.x}, ${l.video.w} of ${w})`);
     const names = Object.keys(l.items);
     for (const k of names) assert.ok(inside(l.items[k]), `${k} inside the safe area ${JSON.stringify(l.items[k])}`);
     for (let i = 0; i < names.length; i++)
@@ -58,3 +63,11 @@ for (const [name, w, h, safe, disp, mode] of CASES) {
     assert.ok(l.video.w >= Math.min(R.w, 300), `picture too small (${l.video.w})`);
   });
 }
+
+test('fill screen (landscape, crops the picture to cover every pixel)', () => {
+  const display = { screen: 'inner', orient: 'landscape', split: false, folded: false, crease: { axis: 'x', at: 475.5, half: 10 } };
+  const l = computeLayout({ width: 951, height: 669, safe: { t: 0, r: 44, b: 20, l: 0 }, videoAspect: 16 / 9, userScale: 1, display, fill: true });
+  assert.equal(l.fit, 'cover');
+  assert.deepEqual(l.video, { x: 0, y: 0, w: 951, h: 669 });
+  for (const [k, r] of Object.entries(l.items)) assert.ok(r.x + r.w <= 951 - 44 + 0.5, `${k} clear of the side status area`);
+});

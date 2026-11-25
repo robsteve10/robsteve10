@@ -1,0 +1,334 @@
+#!/bin/sh
+# DuoPlay for Raspberry Pi: keeps the Pi on your network and the bridge running.
+#
+#  * Wi-Fi: joins the network saved on the SD card (duoplay/wifi.conf, written by the setup
+#    page, or a wifi.txt you put on the card). With none, or when it can't join, the Pi turns
+#    into a "DuoPlay Setup" Wi-Fi hotspot: join that from the iPhone and pick your network.
+#  * Ethernet (a USB adapter): used automatically whenever it's plugged in.
+#  * The green light: steady = ready, fast blinking = joining Wi-Fi, slow blinking = setup.
+#
+# Started by /etc/init.d/duoplay. Everything it and the bridge say goes to /var/log/duoplay.log,
+# which the app can show (Settings, Bridge log).
+
+# (The DUOPLAY_* variables only exist for testing this script away from a Pi.)
+RUN=${DUOPLAY_RUN:-/run/duoplay}
+LOG=${DUOPLAY_LOG:-/var/log/duoplay.log}
+BIN=${DUOPLAY_BIN:-/usr/local/bin/duoplay-bridge}
+AP_IP=192.168.4.1
+SETUP_SSID="DuoPlay Setup"
+JOIN_TIMEOUT=${DUOPLAY_JOIN_TIMEOUT:-45} # seconds to try a saved network before offering the setup hotspot
+LOST_TIMEOUT=120  # ...once it has worked before (a router restarting takes a while)
+RETRY_SETUP=300   # with a saved network, close an unused setup hotspot and try it again
+
+log() { echo "$(date '+%H:%M:%S') info  [pi] $*"; }
+
+BOOT=""
+for d in "${DUOPLAY_MEDIA:-/media}"/*; do
+	[ -f "$d/duoplay/duoplay-bridge" ] && BOOT=$d && break
+done
+if [ -z "$BOOT" ]; then
+	log "The DuoPlay files aren't on the SD card (duoplay/duoplay-bridge is missing)"
+	sleep 30
+	exit 1
+fi
+KIT=$BOOT/duoplay
+DATA=$KIT/data
+SAVED=$KIT/wifi.conf
+TXT=$BOOT/wifi.txt
+WPA_CONF=$RUN/wpa_supplicant.conf
+STA_PID=$RUN/wpa_supplicant.pid
+AP_PID=$RUN/hotspot.pid
+mkdir -p "$RUN"
+
+# Alpine mounts the card read-only; DuoPlay keeps pairing data and the Wi-Fi choice on it.
+mount -o remount,rw,flush "$BOOT" 2>/dev/null || mount -o remount,rw "$BOOT" 2>/dev/null
+mkdir -p "$DATA"
+# Run the bridge from memory rather than the card.
+if [ -n "$DUOPLAY_BIN" ] || { cp "$KIT/duoplay-bridge" "$BIN.new" 2>/dev/null && chmod 755 "$BIN.new" && mv -f "$BIN.new" "$BIN"; }; then :; else
+	BIN=$KIT/duoplay-bridge
+fi
+
+# --- the green light --------------------------------------------------------------------------
+LED=""
+for l in /sys/class/leds/ACT /sys/class/leds/led0; do [ -d "$l" ] && LED=$l && break; done
+LED_STATE=""
+led() {
+	{ [ -n "$LED" ] && [ "$1" != "$LED_STATE" ]; } || return 0
+	LED_STATE=$1
+	case $1 in
+	ready) echo default-on > "$LED/trigger" ;;
+	joining) echo timer > "$LED/trigger"; echo 100 > "$LED/delay_on"; echo 100 > "$LED/delay_off" ;;
+	setup) echo timer > "$LED/trigger"; echo 1000 > "$LED/delay_on"; echo 1000 > "$LED/delay_off" ;;
+	esac 2>/dev/null
+}
+
+# --- interfaces -------------------------------------------------------------------------------
+uptime_s() { read -r up _ < /proc/uptime; echo "${up%%.*}"; }
+wlan_iface() { for i in /sys/class/net/*; do [ -d "$i/wireless" ] && { echo "${i##*/}"; return; }; done; }
+wired_ifaces() {
+	for i in /sys/class/net/*; do
+		[ -d "$i/wireless" ] && continue
+		[ -e "$i/device" ] || continue # real hardware (a USB Ethernet adapter), not lo or bridges
+		echo "${i##*/}"
+	done
+}
+ipv4_of() { ip -4 addr show dev "$1" 2>/dev/null | awk '/inet / && !/ lo$/ { split($2, a, "/"); print a[1]; exit }'; }
+has_carrier() { [ "$(cat "/sys/class/net/$1/carrier" 2>/dev/null)" = 1 ]; }
+
+dhcp_running() { [ -f "$RUN/udhcpc.$1.pid" ] && kill -0 "$(cat "$RUN/udhcpc.$1.pid")" 2>/dev/null; }
+dhcp_start() {
+	dhcp_running "$1" && return
+	# Tries for a few seconds, then keeps trying in the background.
+	udhcpc -i "$1" -b -S -t 2 -T 2 -A 5 -x hostname:duoplay -p "$RUN/udhcpc.$1.pid" >/dev/null 2>&1
+}
+dhcp_stop() {
+	dhcp_running "$1" && kill "$(cat "$RUN/udhcpc.$1.pid")" 2>/dev/null
+	rm -f "$RUN/udhcpc.$1.pid"
+	ip -4 addr flush dev "$1" 2>/dev/null
+}
+
+# --- Wi-Fi as a client ------------------------------------------------------------------------
+saved_name() {
+	n=$(sed -n '/network={/,/}/s/^[[:space:]]*# //p' "$SAVED" 2>/dev/null | head -n 1)
+	echo "${n:-your Wi-Fi}"
+}
+saved_country() { sed -n 's/^country=//p' "$SAVED" 2>/dev/null | head -n 1; }
+sta_running() { [ -f "$STA_PID" ] && kill -0 "$(cat "$STA_PID")" 2>/dev/null; }
+sta_state() { wpa_cli -p /run/wpa_supplicant -i "$WLAN" status 2>/dev/null | sed -n 's/^wpa_state=//p'; }
+sta_start() {
+	cp "$SAVED" "$WPA_CONF"
+	c=$(saved_country)
+	[ -n "$c" ] && iw reg set "$c" 2>/dev/null
+	ip link set "$WLAN" up 2>/dev/null
+	wpa_supplicant -B -s -i "$WLAN" -D nl80211 -c "$WPA_CONF" -P "$STA_PID" >/dev/null 2>&1
+}
+sta_stop() {
+	sta_running && kill "$(cat "$STA_PID")" 2>/dev/null
+	rm -f "$STA_PID"
+	dhcp_stop "$WLAN"
+	sleep 1
+}
+wifi_tune() {
+	# A napping radio adds latency spikes; drivers turn power saving back on when they rejoin.
+	iw dev "$WLAN" get power_save 2>/dev/null | grep -q ': on' && iw dev "$WLAN" set power_save off 2>/dev/null
+}
+
+# --- the setup hotspot ------------------------------------------------------------------------
+scan_networks() {
+	ip link set "$WLAN" up 2>/dev/null
+	: > "$RUN/scan.txt"
+	for i in 1 2 3; do
+		iw dev "$WLAN" scan > "$RUN/scan.txt" 2>/dev/null && [ -s "$RUN/scan.txt" ] && return
+		sleep 2
+	done
+}
+hotspot_start() {
+	how=""
+	cat > "$RUN/hostapd.conf" <<-EOF
+	interface=$WLAN
+	driver=nl80211
+	ssid=$SETUP_SSID
+	hw_mode=g
+	channel=6
+	ieee80211n=1
+	wmm_enabled=1
+	auth_algs=1
+	ignore_broadcast_ssid=0
+	ctrl_interface=$RUN/hostapd
+	EOF
+	if [ -x /usr/local/sbin/hostapd ] && /usr/local/sbin/hostapd -B -P "$AP_PID" "$RUN/hostapd.conf" >/dev/null 2>&1; then
+		how=hostapd
+	else
+		# Fallback: wpa_supplicant's own access point mode.
+		printf 'ctrl_interface=%s\nnetwork={\n\tssid="%s"\n\tmode=2\n\tfrequency=2437\n\tkey_mgmt=NONE\n}\n' \
+			"$RUN/wpa-ap" "$SETUP_SSID" > "$RUN/ap.conf"
+		wpa_supplicant -B -s -i "$WLAN" -D nl80211 -c "$RUN/ap.conf" -P "$AP_PID" >/dev/null 2>&1 && how=wpa_supplicant
+	fi
+	[ -n "$how" ] || return 1
+	ip -4 addr flush dev "$WLAN" 2>/dev/null
+	ip addr add "$AP_IP/24" dev "$WLAN" 2>/dev/null
+	ip link set "$WLAN" up 2>/dev/null
+	log "Setup hotspot \"$SETUP_SSID\" is up (via $how)"
+}
+hotspot_stop() {
+	[ -f "$AP_PID" ] && kill "$(cat "$AP_PID")" 2>/dev/null
+	rm -f "$AP_PID"
+	ip -4 addr flush dev "$WLAN" 2>/dev/null
+	sleep 1
+}
+
+PORTAL=""
+setup_mode() { # $1: note for the top of the page
+	bridge_stop
+	sta_stop
+	led setup
+	scan_networks
+	if ! hotspot_start; then
+		log "Couldn't start the setup hotspot; trying again in a minute"
+		sleep 60
+		return
+	fi
+	idle=0
+	[ -f "$SAVED" ] && idle=$RETRY_SETUP
+	"$BIN" --setup-portal --setup-iface "$WLAN" --setup-ip "$AP_IP" --setup-scan "$RUN/scan.txt" \
+		--setup-save "$SAVED" --setup-message "$1" --setup-country "$(saved_country)" --setup-idle "$idle" &
+	PORTAL=$!
+	wait "$PORTAL"
+	rc=$?
+	PORTAL=""
+	hotspot_stop
+	case $rc in
+	0) log "Wi-Fi network chosen on the setup page" ;;
+	3) log "Nobody used the setup page; trying the saved Wi-Fi again" ;;
+	*) log "The setup page stopped (code $rc)"; sleep 5 ;;
+	esac
+}
+
+# --- the bridge -------------------------------------------------------------------------------
+BRIDGE=""
+bridge_alive() { [ -n "$BRIDGE" ] && [ -d "/proc/$BRIDGE" ] && ! grep -q '^State:.*Z' "/proc/$BRIDGE/status" 2>/dev/null; }
+bridge_start() {
+	"$BIN" --data-dir "$DATA" --log-file "$LOG" &
+	BRIDGE=$!
+}
+bridge_stop() {
+	[ -n "$BRIDGE" ] || return 0
+	kill "$BRIDGE" 2>/dev/null
+	i=0
+	while bridge_alive && [ $i -lt 30 ]; do usleep 100000; i=$((i + 1)); done
+	bridge_alive && kill -9 "$BRIDGE" 2>/dev/null
+	wait "$BRIDGE" 2>/dev/null
+	BRIDGE=""
+}
+bridge_check() {
+	bridge_alive && return
+	if [ -n "$BRIDGE" ]; then
+		wait "$BRIDGE" 2>/dev/null
+		log "The bridge stopped; starting it again"
+	fi
+	bridge_start
+}
+
+# --- time: a Pi has no clock battery, and HTTPS and Sony's sign-in need the right time ---------
+# One quick try before the bridge starts; busybox ntpd then keeps at it in the background and
+# corrects the clock whenever it gets through.
+clock_ok() { [ "$(date +%s)" -ge 1735689600 ]; } # 2025 or later
+sync_time() {
+	pgrep -x ntpd >/dev/null && return
+	if timeout 8 ntpd -n -q -p pool.ntp.org >/dev/null 2>&1; then
+		log "Clock set from the internet: $(date)"
+	else
+		log "Couldn't get the time from the internet yet; will keep trying"
+	fi
+	ntpd -p pool.ntp.org -p time.cloudflare.com -p time.google.com
+}
+
+trim_log() {
+	[ -f "$LOG" ] && [ "$(wc -c < "$LOG")" -gt 1048576 ] || return 0
+	tail -n 400 "$LOG" > "$LOG.tmp" && cat "$LOG.tmp" > "$LOG"
+	rm -f "$LOG.tmp"
+}
+
+cleanup() {
+	trap - TERM INT
+	[ -n "$PORTAL" ] && kill "$PORTAL" 2>/dev/null
+	bridge_stop
+	[ -n "$WLAN" ] && { hotspot_stop; sta_stop; }
+	exit 0
+}
+trap cleanup TERM INT
+
+# --- go ---------------------------------------------------------------------------------------
+log "DuoPlay for Raspberry Pi is starting on a $(tr -d '\0' < /proc/device-tree/model 2>/dev/null)"
+led joining
+
+if [ -f "$TXT" ]; then
+	if "$BIN" --wifi-txt "$TXT" --setup-save "$SAVED"; then
+		rm -f "$TXT"
+		log "Saved the Wi-Fi network from wifi.txt (and removed that file, so the password isn't left on the card)"
+	else
+		log "wifi.txt couldn't be used (see above); the setup hotspot will be offered instead"
+	fi
+fi
+
+# The Wi-Fi chip's driver takes a moment to appear.
+i=0
+while [ -z "${DUOPLAY_WLAN:-$(wlan_iface)}" ] && [ $i -lt 20 ]; do sleep 1; i=$((i + 1)); done
+WLAN=${DUOPLAY_WLAN:-$(wlan_iface)}
+if [ -n "$WLAN" ]; then log "Wi-Fi: $WLAN"; else log "No Wi-Fi found; using Ethernet only"; fi
+
+join_since=$(uptime_s)
+CLOCK_WAS_OK=""
+connected_once=""
+last_ip=""
+prev_state=""
+while :; do
+	for e in $(wired_ifaces); do
+		ip link set "$e" up 2>/dev/null
+		if has_carrier "$e"; then dhcp_start "$e"; elif dhcp_running "$e"; then dhcp_stop "$e"; fi
+	done
+
+	state=""
+	if [ -n "$WLAN" ] && [ -f "$SAVED" ]; then
+		if ! sta_running; then
+			sta_start
+			join_since=$(uptime_s)
+			log "Joining Wi-Fi \"$(saved_name)\""
+		fi
+		state=$(sta_state)
+		if [ "$state" = COMPLETED ]; then
+			dhcp_start "$WLAN"
+			# Just (re)joined: ask for an address now rather than at the next renewal.
+			[ "$prev_state" != COMPLETED ] && [ -f "$RUN/udhcpc.$WLAN.pid" ] && kill -USR1 "$(cat "$RUN/udhcpc.$WLAN.pid")" 2>/dev/null
+		fi
+	fi
+	prev_state=$state
+
+	ip=""
+	for e in $(wired_ifaces); do
+		has_carrier "$e" && ip=$(ipv4_of "$e") && [ -n "$ip" ] && break
+	done
+	[ -z "$ip" ] && [ "$state" = COMPLETED ] && ip=$(ipv4_of "$WLAN")
+
+	if [ -n "$ip" ]; then
+		led ready
+		if [ "$ip" != "$last_ip" ]; then
+			log "On the network. On your iPhone open http://duoplay.local:8080 (or http://$ip:8080)"
+			last_ip=$ip
+			sync_time
+			clock_ok && CLOCK_WAS_OK=1 || CLOCK_WAS_OK=""
+			bridge_stop
+			bridge_start
+		elif [ -z "$CLOCK_WAS_OK" ] && clock_ok; then
+			# The bridge started with a clock stuck in the past, so without HTTPS. Now it's right.
+			CLOCK_WAS_OK=1
+			log "The clock is right now; restarting the bridge so HTTPS comes up"
+			bridge_stop
+			bridge_start
+		fi
+		bridge_check
+		[ "$state" = COMPLETED ] && wifi_tune
+		join_since=$(uptime_s)
+		connected_once=1
+	else
+		[ -n "$last_ip" ] && log "Off the network; waiting for it to come back"
+		last_ip=""
+		led joining
+		limit=$JOIN_TIMEOUT
+		[ -n "$connected_once" ] && limit=$LOST_TIMEOUT
+		if [ -n "$WLAN" ] && { [ ! -f "$SAVED" ] || [ $(( $(uptime_s) - join_since )) -ge $limit ]; }; then
+			note=""
+			if [ -f "$SAVED" ] && [ -n "$connected_once" ]; then
+				note="The Pi lost “$(saved_name)”. Pick it again, or another network."
+			elif [ -f "$SAVED" ]; then
+				note="The Pi couldn't join “$(saved_name)”. Check the password, or pick another network."
+			fi
+			setup_mode "$note"
+			join_since=$(uptime_s)
+			prev_state=""
+			continue
+		fi
+	fi
+	trim_log
+	sleep 3
+done

@@ -1,0 +1,17 @@
+#!/sbin/openrc-run
+# DuoPlay: keeps the Pi on the network (or runs the Wi-Fi setup hotspot) and the bridge running.
+
+name="DuoPlay"
+description="PS5 Remote Play bridge for iPhone"
+command=/usr/sbin/duoplay-pi
+supervisor=supervise-daemon
+respawn_delay=3
+respawn_max=0
+output_log=/var/log/duoplay.log
+error_log=/var/log/duoplay.log
+
+depend() {
+	need localmount
+	after bootmisc modules hwdrivers modloop sysctl
+	use logger
+}

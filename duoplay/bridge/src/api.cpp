@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 #include "api.hpp"
+#include "embedded_web.hpp"
 #include "psn.hpp"
 #include "util.hpp"
 
@@ -8,6 +9,9 @@
 
 #include <algorithm>
 #include <set>
+#ifdef __linux__
+#include <unistd.h>
+#endif
 
 using json = nlohmann::json;
 
@@ -103,6 +107,39 @@ void Api::install(httplib::Server &srv) {
 
 	srv.set_default_headers({{"X-Content-Type-Options", "nosniff"}});
 
+	// ---- log: the end of the bridge's log, for when something needs looking into ----
+	srv.Get("/api/log", [&](const httplib::Request &, httplib::Response &res) {
+		res.set_header("Cache-Control", "no-store");
+		std::string text;
+#ifdef __linux__
+		// Installed as a systemd service (Raspberry Pi OS): the log is in the journal.
+		if (C.logFile.empty() && access("/run/systemd/system", F_OK) == 0) {
+			if (FILE *p = popen("journalctl -u duoplay.service -n 400 --no-pager -o short-precise 2>&1", "r")) {
+				char buf[4096];
+				size_t n;
+				while ((n = fread(buf, 1, sizeof(buf), p)) > 0)
+					text.append(buf, n);
+				pclose(p);
+			}
+		}
+		if (!text.empty()) {
+			res.set_content(text, "text/plain; charset=utf-8");
+			return;
+		}
+#endif
+		if (C.logFile.empty() || !readFile(C.logFile, text)) {
+			res.set_content("This bridge isn't writing a log file. Its messages are in the window or service it runs in.\n",
+			                "text/plain; charset=utf-8");
+			return;
+		}
+		const size_t keep = 256 * 1024;
+		if (text.size() > keep) {
+			text.erase(0, text.size() - keep);
+			text.erase(0, text.find('\n') + 1);
+		}
+		res.set_content(text, "text/plain; charset=utf-8");
+	});
+
 	// ---- state ----------------------------------------------------------------
 	srv.Get("/api/state", [&](const httplib::Request &req, httplib::Response &res) {
 		if (req.has_param("discover"))
@@ -151,6 +188,9 @@ void Api::install(httplib::Server &srv) {
 		            {"secure", req.ssl != nullptr},
 		            {"https_port", C.tlsEnabled ? C.httpsPort : 0},
 		            {"http_port", C.httpPort},
+		            {"device", {{"model", C.device.model}, {"cores", C.device.cores}, {"low_power", C.device.lowPower},
+		                        {"max_kbps", C.device.maxKbps}, {"recommended_height", C.device.recommendedHeight},
+		                        {"wireless", C.device.wireless}}},
 		            {"addresses", ips}});
 	});
 
@@ -236,6 +276,10 @@ void Api::install(httplib::Server &srv) {
 		r.height = b.value("height", 1080);
 		r.fps = b.value("fps", 60);
 		r.bitrateKbps = std::clamp(b.value("bitrate_kbps", 0), 0, 60000);
+		// A small board (Pi Zero W: one core, one 2.4 GHz radio carrying the picture twice)
+		// gets a bitrate it can actually forward; "Auto" means that cap.
+		if (C.device.maxKbps && (r.bitrateKbps == 0 || r.bitrateKbps > C.device.maxKbps))
+			r.bitrateKbps = C.device.maxKbps;
 		r.hdr = b.value("hdr", false);
 		// Reuse a running session for the same console and settings: a phone
 		// reattaching after a fold/unfold or a Wi-Fi blip must not restart the stream.
@@ -380,8 +424,37 @@ void Api::install(httplib::Server &srv) {
 	});
 
 	// ---- the web app ------------------------------------------------------------------
-	if (!srv.set_mount_point("/", C.webDir))
+	if (C.webDir.empty()) {
+		// Built-in copy of the web app. ETags let the phone revalidate instead of re-downloading.
+		srv.Get(R"(/(.*))", [](const httplib::Request &req, httplib::Response &res) {
+			std::string path = req.matches[1];
+			if (path.empty() || path.back() == '/')
+				path += "index.html";
+			for (size_t i = 0; i < kEmbeddedWebCount; i++) {
+				const auto &f = kEmbeddedWeb[i];
+				if (path != f.path)
+					continue;
+				uint64_t h = 1469598103934665603ull;
+				for (size_t k = 0; k < f.size; k += 97)
+					h = (h ^ f.data[k]) * 1099511628211ull;
+				h ^= f.size;
+				char etag[40];
+				snprintf(etag, sizeof(etag), "\"%016llx\"", (unsigned long long)h);
+				res.set_header("ETag", etag);
+				res.set_header("Cache-Control", "no-cache");
+				if (req.get_header_value("If-None-Match") == etag) {
+					res.status = 304;
+					return;
+				}
+				res.set_content(reinterpret_cast<const char *>(f.data), f.size, f.mime);
+				return;
+			}
+			res.status = 404;
+			res.set_content("Not found", "text/plain");
+		});
+	} else if (!srv.set_mount_point("/", C.webDir)) {
 		LOGE("http", "Web app folder not found: %s", C.webDir.c_str());
+	}
 	srv.set_file_extension_and_mimetype_mapping("webmanifest", "application/manifest+json");
 	srv.set_file_extension_and_mimetype_mapping("js", "text/javascript");
 	srv.set_post_routing_handler([](const httplib::Request &req, httplib::Response &res) {

@@ -87,9 +87,18 @@
     <div class="col-side">
       <section class="card glass note" id="card-bridgeless" hidden>
         <h3>Connecting to your PS5</h3>
-        <p>Safari can't open the kind of network connection a PS5 uses for Remote Play, so a web page can't reach the console
-           by itself. The DuoPlay bridge runs on any always-on device at home and opens this same app from there, connected to
-           your console. This copy runs without one: the demo and HDR check work, console play doesn't.</p>
+        <p>Safari can't open the kind of network connection a PS5 uses, so DuoPlay reaches the console through a small bridge
+           at home. A Raspberry Pi Zero W does the job, and you can set it up from this phone:</p>
+        <ol>
+          <li>Download the SD-card kit, unzip it in Files and copy what's inside onto the Pi's microSD card.</li>
+          <li>Start the Pi. Join the <b>DuoPlay Setup</b> Wi-Fi and pick your home network on the page that opens.</li>
+          <li>Open <b>http://duoplay.local:8080</b> in Safari and add DuoPlay to your Home Screen from there.</li>
+        </ol>
+        <div class="row wrap">
+          <a class="btn primary" href="https://raw.githubusercontent.com/robsteve10/robsteve10/claude/festive-carson-vg2aw4/duoplay/pi/duoplay-pi-kit.zip" download>Download the Pi kit (65 MB)</a>
+          <a class="btn" href="https://github.com/robsteve10/robsteve10/blob/claude/festive-carson-vg2aw4/duoplay/README.md#raspberry-pi-zero-w-set-up-from-the-iphone" target="_blank" rel="noopener">Step-by-step guide</a>
+        </div>
+        <p class="hint">This copy runs without a bridge: the demo and the HDR check work, console play doesn't.</p>
       </section>
 
       <section id="step-psn" class="card glass" hidden>
@@ -197,9 +206,13 @@
   <label class="field">Picture
     <select id="set-picture" data-set="picture"><option value="standard">Standard: lowest latency</option><option value="hdr">HDR: brighter, a little more latency</option></select>
   </label>
+  <label class="field">Landscape
+    <select id="set-fill" data-set="fill"><option value="false">Whole picture</option><option value="true">Fill the screen (crops the edges)</option></select>
+  </label>
   <label class="field">Resolution
     <select id="set-height" data-set="height"><option value="1080">1080p</option><option value="720">720p</option><option value="540">540p</option></select>
   </label>
+  <p class="hint" id="set-device-hint" hidden></p>
   <label class="field">Frame rate
     <select id="set-fps" data-set="fps"><option value="60">60 fps</option><option value="30">30 fps</option></select>
   </label>
@@ -220,6 +233,7 @@
   <label class="switch"><input id="set-hidepad" type="checkbox" data-set="hideWithPad"><span>Hide touch controls while a controller is in use</span></label>
   <label class="switch"><input id="set-stats" type="checkbox" data-set="showStats"><span>Show network stats</span></label>
   <p class="hint">Picture and quality changes apply the next time you connect.</p>
+  <a class="btn ghost" id="set-log" href="api/log" target="_blank" rel="noopener">Bridge log</a>
   <button class="btn" data-close-sheet>Done</button>
 </template>
 

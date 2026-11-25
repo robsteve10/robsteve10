@@ -161,6 +161,7 @@ bool readFile(const std::string &path, std::string &out) {
 
 bool writeFileAtomic(const std::string &path, const std::string &data) {
 	std::string tmp = path + ".tmp";
+#ifdef _WIN32
 	{
 		std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
 		if (!f)
@@ -169,6 +170,18 @@ bool writeFileAtomic(const std::string &path, const std::string &data) {
 		if (!f)
 			return false;
 	}
+#else
+	{
+		// fsync: on the Raspberry Pi kit this lands on the SD card, and the Pi gets unplugged.
+		FILE *f = fopen(tmp.c_str(), "wb");
+		if (!f)
+			return false;
+		bool ok = fwrite(data.data(), 1, data.size(), f) == data.size() && fflush(f) == 0 && fsync(fileno(f)) == 0;
+		ok = fclose(f) == 0 && ok;
+		if (!ok)
+			return false;
+	}
+#endif
 #ifdef _WIN32
 	return MoveFileExA(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING) != 0;
 #else

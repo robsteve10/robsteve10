@@ -39,16 +39,20 @@ const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
  * @param {object} p.display            from display.js
  */
 export function computeLayout(p) {
-  const { width: W, height: H, safe, videoAspect: va = 16 / 9, userScale = 1, display: d } = p;
+  const { width: W, height: H, safe, videoAspect: va = 16 / 9, userScale = 1, display: d, fill = false } = p;
+  // Two rectangles: the whole screen, which the picture may use edge to edge (the
+  // status bar and Dynamic Island just draw over it, as in any full-screen video app),
+  // and the safe area, which the controls stay inside so no thumb lands under them.
+  const F = { x: 0, y: 0, w: W, h: H };
   const R = { x: safe.l, y: safe.t, w: Math.max(1, W - safe.l - safe.r), h: Math.max(1, H - safe.t - safe.b) };
-  const base = { screen: d.screen, orient: d.orient, split: d.split, crease: d.crease };
+  const base = { screen: d.screen, orient: d.orient, split: d.split, crease: d.crease, fit: 'contain' };
 
   // Handheld: inside screen in portrait (flat or half-folded like a laptop).
   const stackedFold = d.crease && d.crease.axis === 'y';
   if (stackedFold) {
     const c = d.crease;
     const gapHalf = c.half + CREASE_CLEARANCE;
-    const top = { x: R.x, y: R.y, w: R.w, h: c.at - gapHalf - R.y };
+    const top = { x: F.x, y: F.y, w: F.w, h: c.at - gapHalf };
     const bottom = { x: R.x, y: c.at + gapHalf, w: R.w, h: R.y + R.h - (c.at + gapHalf) };
     if (top.h > 120 && bottom.h > 240) {
       const video = fit(top, va, 'center');
@@ -58,8 +62,9 @@ export function computeLayout(p) {
   }
 
   if (d.orient === 'portrait') {
-    const video = { x: R.x, y: R.y, w: R.w, h: R.w / va };
-    const panel = { x: R.x, y: R.y + video.h, w: R.w, h: R.h - video.h };
+    const video = { x: F.x, y: F.y, w: F.w, h: F.w / va };
+    const panelTop = Math.max(R.y, video.h);
+    const panel = { x: R.x, y: panelTop, w: R.w, h: R.y + R.h - panelTop };
     if (panel.h >= 230) {
       const items = layoutPanel(panel, userScale);
       // Spare height goes mostly between picture and pad, so the picture sits close
@@ -75,22 +80,25 @@ export function computeLayout(p) {
   let s = userScale;
   const needH = S.shH + Math.max(S.dpad, S.faces) + S.stick + S.gap * 2.2;
   s = Math.max(0.55, Math.min(s, (R.h - 2 * S.margin) / needH));
-  const vw = Math.min(R.w, R.h * va);
-  const gutter = (R.w - vw) / 2;
+  const vw = Math.min(F.w, F.h * va);
+  const gutter = (F.w - vw) / 2;
   const clusterW = Math.max(S.dpad, S.stick, S.faces) * s + 2 * S.margin;
-  if (gutter >= clusterW) {
-    const video = { x: R.x + gutter, y: R.y + (R.h - vw / va) / 2, w: vw, h: vw / va };
-    const left = { x: R.x, y: R.y, w: gutter, h: R.h };
-    const right = { x: R.x + R.w - gutter, y: R.y, w: gutter, h: R.h };
+  if (gutter - Math.max(safe.l, safe.r) >= clusterW && !fill) {
+    const video = { x: gutter, y: (F.h - vw / va) / 2, w: vw, h: vw / va };
+    const left = { x: R.x, y: R.y, w: gutter - R.x, h: R.h };
+    const right = { x: W - gutter, y: R.y, w: R.x + R.w - (W - gutter), h: R.h };
     return finish({ ...base, mode: 'split', video, items: layoutSides(R, left, right, s, true, d.crease), scale: s });
   }
-  // Taller than 16:9 (both Duo screens are): picture at the top, sticks in the band below.
-  const tall = R.w / R.h < va;
-  const video = fit(R, va, tall ? 'top' : 'center');
   const sideW = Math.min(R.w * 0.36, (S.dpad / 2 + S.stick * 0.78 + S.stick / 2) * s + S.margin * 2);
   const left = { x: R.x, y: R.y, w: sideW, h: R.h };
   const right = { x: R.x + R.w - sideW, y: R.y, w: sideW, h: R.h };
-  return finish({ ...base, mode: 'overlay', video, items: layoutSides(R, left, right, s, false, d.crease), scale: s });
+  const items = layoutSides(R, left, right, s, false, d.crease);
+  // "Fill screen": the picture covers every pixel, cropping its edges to fit the shape.
+  if (fill) return finish({ ...base, mode: 'overlay', fit: 'cover', video: { ...F }, items, scale: s });
+  // Taller than 16:9 (both Duo screens are): picture at the top, sticks in the band below.
+  const tall = F.w / F.h < va;
+  const video = fit(F, va, tall ? 'top' : 'center');
+  return finish({ ...base, mode: 'overlay', video, items, scale: s });
 }
 
 function fit(rect, va, anchor) {

@@ -5,8 +5,12 @@
 // browser over WebRTC without re-encoding it.
 
 #include "api.hpp"
+#include "device.hpp"
+#include "embedded_web.hpp"
 #include "console.hpp"
+#include "mdns.hpp"
 #include "media.hpp"
+#include "setup.hpp"
 #include "store.hpp"
 #include "streamer.hpp"
 #include "tls.hpp"
@@ -49,9 +53,20 @@ void usage() {
 	        "  --bind IP            only use this local address for streaming\n"
 	        "  --announce-ip IP     also offer this address to phones (e.g. the host's LAN IP when in Docker)\n"
 	        "  --data-dir DIR       where pairing data and certificates live (default %s)\n"
-	        "  --web-dir DIR        where the web app is (default: next to the program)\n"
+	        "  --web-dir DIR        serve the web app from this folder instead of the built-in copy\n"
+	        "  --mdns-name NAME     answer NAME.local on the network (default duoplay; \"\" turns it off)\n"
+	        "  --install            set DuoPlay up to start at boot (Linux with systemd, run with sudo)\n"
+	        "  --uninstall          remove that again\n"
 	        "  --test-pattern FILE  offer a looping H.264 test stream as a fake console\n"
-	        "  --verbose            debug logging\n",
+	        "  --verbose            debug logging\n\n"
+	        "Raspberry Pi kit, first-run Wi-Fi setup (run by the kit while its setup hotspot is up):\n"
+	        "  --setup-portal       serve the setup page, DHCP and DNS on the hotspot instead of streaming\n"
+	        "  --setup-iface IF     hotspot interface (wlan0)    --setup-ip IP     its address (192.168.4.1)\n"
+	        "  --setup-scan FILE    `iw dev IF scan` output      --setup-save FILE where to write the network\n"
+	        "  --setup-message TXT  note shown on the page       --setup-country CC  preselected country\n"
+	        "  --setup-idle SEC     give up (exit 3) after SEC without visitors\n"
+	        "  --wifi-txt FILE      turn a hand-written wifi.txt into the --setup-save file, then exit\n"
+	        "  --log-file FILE      the file this bridge's output goes to, shown in the app (Settings)\n",
 	        DUOPLAY_VERSION, defaultDataDir().c_str());
 }
 
@@ -87,6 +102,10 @@ int main(int argc, char **argv) {
 	std::string dataDir = defaultDataDir();
 	std::string webDir;
 	std::string testPattern;
+	std::string mdnsName = "duoplay";
+	bool setupPortal = false;
+	SetupPortalOptions setup;
+	std::string wifiTxt, logFile;
 
 	for (int i = 1; i < argc; i++) {
 		std::string a = argv[i];
@@ -113,6 +132,39 @@ int main(int argc, char **argv) {
 			webDir = next();
 		else if (a == "--test-pattern")
 			testPattern = next();
+		else if (a == "--mdns-name")
+			mdnsName = next();
+		else if (a == "--wifi-txt")
+			wifiTxt = next();
+		else if (a == "--log-file")
+			logFile = next();
+		else if (a == "--setup-portal")
+			setupPortal = true;
+		else if (a == "--setup-iface")
+			setup.iface = next();
+		else if (a == "--setup-ip")
+			setup.ip = next();
+		else if (a == "--setup-scan")
+			setup.scanFile = next();
+		else if (a == "--setup-save")
+			setup.saveTo = next();
+		else if (a == "--setup-message")
+			setup.message = next();
+		else if (a == "--setup-country")
+			setup.country = next();
+		else if (a == "--setup-idle")
+			setup.idleTimeoutSec = std::stoi(next());
+		else if (a == "--setup-ports") { // HTTP,DNS,DHCP - for testing without root
+			std::string v = next();
+			if (sscanf(v.c_str(), "%d,%d,%d", &setup.httpPort, &setup.dnsPort, &setup.dhcpPort) != 3) {
+				fprintf(stderr, "--setup-ports wants HTTP,DNS,DHCP\n");
+				return 2;
+			}
+		}
+		else if (a == "--install")
+			return installService(dataDir == defaultDataDir() ? "/var/lib/duoplay" : dataDir);
+		else if (a == "--uninstall")
+			return uninstallService();
 		else if (a == "--verbose" || a == "-v")
 			setLogLevel(LogLevel::Debug);
 		else if (a == "--help" || a == "-h") {
@@ -124,7 +176,9 @@ int main(int argc, char **argv) {
 			return 2;
 		}
 	}
-	if (webDir.empty())
+	// The web app is compiled in; --web-dir serves a folder instead (handy while developing it).
+	bool embedded = webDir.empty() && kEmbeddedWebCount > 0;
+	if (webDir.empty() && !embedded)
 		webDir = findWebDir();
 
 	std::signal(SIGINT, onSignal);
@@ -132,6 +186,16 @@ int main(int argc, char **argv) {
 #ifndef _WIN32
 	std::signal(SIGPIPE, SIG_IGN);
 #endif
+	if (!wifiTxt.empty()) {
+		std::string err;
+		if (setup.saveTo.empty() || !wifiFromTxt(wifiTxt, setup.saveTo, err)) {
+			LOGE("setup", "wifi.txt: %s", setup.saveTo.empty() ? "needs --setup-save" : err.c_str());
+			return 1;
+		}
+		return 0;
+	}
+	if (setupPortal)
+		return runSetupPortal(setup, g_quit);
 
 	if (chiaki_lib_init() != CHIAKI_ERR_SUCCESS) {
 		LOGE("main", "Could not initialise the Remote Play library");
@@ -147,6 +211,13 @@ int main(int argc, char **argv) {
 			                LOGD("webrtc", "%s", msg.c_str());
 	                });
 
+	DeviceProfile device = detectDevice();
+	LOGI("main", "Running on %s (%d core%s%s%s)", device.model.c_str(), device.cores, device.cores == 1 ? "" : "s",
+	     device.wireless ? ", Wi-Fi " : "", device.wireless ? device.netIface.c_str() : "");
+	if (device.maxKbps)
+		LOGI("main", "This board streams best at %dp, up to %d kbps; the app defaults to that", device.recommendedHeight, device.maxKbps);
+	tuneForStreaming(device);
+
 	Store store(dataDir);
 	ConsoleManager consoles(store);
 	MediaHub hub;
@@ -159,7 +230,7 @@ int main(int argc, char **argv) {
 	for (const auto &ip : net.announceIps)
 		ips.push_back(ip);
 
-	ApiContext ctx{store, consoles, sessions, hub, net, webDir, {}, false, httpPort, httpsPort};
+	ApiContext ctx{store, consoles, sessions, hub, net, webDir, {}, false, httpPort, httpsPort, device, logFile};
 	if (httpsPort > 0) {
 		std::string err;
 		if (ensureTls(dataDir, ips, hostName(), ctx.tls, err))
@@ -201,11 +272,17 @@ int main(int argc, char **argv) {
 		https.reset();
 	}
 	std::thread httpThread([&] { http.listen_after_bind(); });
+	MdnsResponder mdns({mdnsName});
+	mdns.start();
 	std::thread httpsThread;
 	if (https)
 		httpsThread = std::thread([&] { https->listen_after_bind(); });
 
 	fprintf(stderr, "\n  DuoPlay bridge %s is running.\n\n  Open on your iPhone (same Wi-Fi):\n", DUOPLAY_VERSION);
+#ifdef __linux__
+	if (!mdnsName.empty())
+		fprintf(stderr, "    http://%s.local:%d\n", mdnsName.c_str(), httpPort);
+#endif
 	auto addrs = localIPv4Addresses();
 	for (const auto &a : addrs) {
 		if (https)
@@ -214,12 +291,13 @@ int main(int argc, char **argv) {
 	}
 	if (addrs.empty())
 		fprintf(stderr, "    (no network address found)\n");
-	fprintf(stderr, "\n  Streaming uses UDP port %u. Web app: %s\n  Data: %s\n\n", net.udpPort, webDir.c_str(),
+	fprintf(stderr, "\n  Streaming uses UDP port %u. Web app: %s\n  Data: %s\n\n", net.udpPort, embedded ? "built in" : webDir.c_str(),
 	        dataDir.c_str());
 
 	while (!g_quit)
 		std::this_thread::sleep_for(std::chrono::milliseconds(200));
 	LOGI("main", "Shutting down");
+	mdns.stop();
 	http.stop();
 	if (https)
 		https->stop();

@@ -30,9 +30,10 @@ PS5 ──(Remote Play, wired)──► DuoPlay bridge ──(Wi-Fi, WebRTC)─�
 - **The app** is a Safari web app built for the Duo. You add it to the Home Screen from the
   bridge's address, and from then on it launches like any other app.
 
-If you have no device to run the bridge on, use a native App Store app. A preview of the
-DuoPlay app, with a demo game in place of the console, runs without a bridge. It lets you try
-the screens, controls and HDR check on the phone itself.
+A **Raspberry Pi Zero W** is enough, and it can be set up from the iPhone alone (see
+[Raspberry Pi Zero W](#raspberry-pi-zero-w-set-up-from-the-iphone)). A preview of the DuoPlay
+app, with a demo game in place of the console, runs without a bridge. It lets you try the
+screens, controls and HDR check on the phone itself.
 
 ## Built for iPhone Duo
 
@@ -135,11 +136,83 @@ What helps most:
 3. Start with **1080p / 60 fps / Auto**, **Balanced**. If the dot stays amber or red, try
    720p, then **Smooth**.
 
+## Raspberry Pi Zero W, set up from the iPhone
+
+The whole setup works from the Duo itself, no computer needed. You need the Pi, its power
+supply, a microSD card (1 GB or more) and a USB-C SD card reader for the iPhone.
+
+### A card with nothing on it: the SD-card kit
+
+The kit is a zip of files you copy onto the card. There is no disk image to flash. It holds
+Alpine Linux (unmodified, it runs from memory, so pulling the plug is safe) plus DuoPlay.
+
+1. In Safari on the Duo, download
+   [duoplay-pi-kit.zip](https://raw.githubusercontent.com/robsteve10/robsteve10/claude/festive-carson-vg2aw4/duoplay/pi/duoplay-pi-kit.zip)
+   (65 MB). In **Files → Downloads**, tap it to unzip. You get a `duoplay-pi-kit` folder.
+2. Plug the card into the iPhone. In **Files**, long-press the card under **Locations** →
+   **Erase** → **MS-DOS (FAT)**.
+   - A card that already shows up in Files works as it is: just delete what's on it.
+   - A card that came with Raspberry Pi OS shows up as `bootfs`. Delete everything in it
+     and use that.
+3. Open the `duoplay-pi-kit` folder. Tap **…** → **Select**, then **Select All**, then
+   **Copy**. Open the card and long-press an empty spot → **Paste**. The files have to be at
+   the top of the card, not inside a folder. Wait for the copy to finish before unplugging.
+4. Put the card in the Pi and plug in power. After about a minute, the green light blinks
+   slowly.
+5. On the iPhone, go to **Settings → Wi-Fi** and join **DuoPlay Setup**. A page opens by
+   itself. Pick your home Wi-Fi (the one the PS5 is on), type its password and tap
+   **Join**.
+6. Once the iPhone is back on your Wi-Fi, open **http://duoplay.local:8080** in Safari.
+   Then tap **Share → Add to Home Screen**, and carry on from step 2 of
+   [On the iPhone Duo](#2-on-the-iphone-duo).
+
+The green light on the Pi:
+
+| Light | Meaning |
+| --- | --- |
+| Steady | Ready |
+| Blinking fast | Joining Wi-Fi |
+| Blinking slowly | The setup hotspot is up |
+
+If the Pi later can't find its network (a new router, a new home), the setup hotspot comes
+back after about a minute. The card's `duoplay/README.txt` has the details. Prefer typing
+the Wi-Fi password into a file? A `wifi.txt` on the card works too, as that README explains.
+
+### A Pi that already runs Raspberry Pi OS
+
+Use an SSH app on the iPhone (Termius, Blink and others) to log in to the Pi, and run:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/robsteve10/robsteve10/claude/festive-carson-vg2aw4/duoplay/pi/install.sh | sudo sh
+```
+
+It installs DuoPlay as a service that starts at boot, switches off Wi-Fi power saving and
+prints the address to open: **http://duoplay.local:8080**.
+
+### What a Pi Zero W can do
+
+- **The picture crosses the radio twice.** The Zero W has one 1 GHz core and one 2.4 GHz
+  Wi-Fi radio. Every frame goes PS5 → Pi, then Pi → iPhone. So on a Zero W, DuoPlay:
+  - defaults to **720p**
+  - caps the bitrate at **6 Mbps**
+  - uses the Standard picture, which suits a Zero W best
+- **The CPU has room.** The bridge never decodes or re-encodes video. It only decrypts and
+  repackages what the console sends.
+- **What helps, most first:**
+  1. The PS5 on Ethernet.
+  2. The Pi near the router.
+  3. A USB Ethernet adapter on the Pi (with a micro-USB OTG cable). It's used automatically
+     and takes one of the two Wi-Fi trips away.
+- **Bluetooth is switched off on the kit.** On the Zero W it shares the radio and antenna
+  with Wi-Fi.
+- **A Pi Zero 2 W** has four cores and the same radio, so it gets 720p up to 8 Mbps.
+
 ## Set up
 
 ### 1. The bridge
 
-On a Raspberry Pi, Linux machine or Mac on the same network as the PS5:
+On a Raspberry Pi Zero W, use [the kit or the installer above](#raspberry-pi-zero-w-set-up-from-the-iphone).
+On another Raspberry Pi, Linux machine or Mac on the same network as the PS5:
 
 ```sh
 # Debian / Ubuntu / Raspberry Pi OS
@@ -182,6 +255,18 @@ npm run build:preview    # the single-page preview build
 ./dist/duoplay-bridge --test-pattern "stream.h264|stream-hdr.hevc"   # a fake console for testing
 ```
 
+The Raspberry Pi build is a static ARMv6 binary, cross-compiled with Zig's clang and musl:
+
+```sh
+scripts/build-pi.sh build-pi                                   # -> build-pi/duoplay-bridge
+python3 scripts/make-pi-kit.py --bridge build-pi/duoplay-bridge --out dist --image
+```
+
+`make-pi-kit.py` downloads Alpine's Raspberry Pi release and hostapd (checksummed), and adds
+DuoPlay's overlay from `pi/kit/`. The overlay holds the boot service and `duoplay-pi`, which
+keeps the Pi on Wi-Fi or Ethernet and runs the setup hotspot. `--image` also writes an SD-card
+image, for boot-testing in `qemu-system-arm -M raspi0`.
+
 ## Status
 
 - **Tested here:**
@@ -190,7 +275,17 @@ npm run build:preview    # the single-page preview build
     HTTPS.
   - The layout engine for every screen state.
   - The HDR muxer's output, checked with ffprobe and a full decode.
+  - The Raspberry Pi kit, booted in an emulated Pi Zero W (`qemu-system-arm -M raspi0`).
+    Alpine loaded the overlay, installed its packages and started DuoPlay, which recognised
+    the board and served the app over USB Ethernet.
+  - The setup hotspot's DHCP, DNS and page, and the Pi's Wi-Fi logic, against a simulated
+    phone: first start, a wrong password, then the right one. The saved key matches
+    `wpa_passphrase`, and Alpine's own wpa_supplicant reads the file.
 - **Not tested yet:**
+  - A real Raspberry Pi Zero W: its Wi-Fi radio (the setup hotspot and joining your
+    network) and how much of the 2.4 GHz band the picture gets in practice.
+  - The iPhone's Files app writing the card. Most cards come formatted the right way; if a
+    Pi doesn't start (no green light activity), reformat the card as MS-DOS (FAT).
   - A real PS5.
   - Safari on an actual iPhone Duo. Screen sizes come from Apple's specs and WebKit's
     Safari 27.1 notes. The point sizes, pixel ratio and launch-image sizes are inferred from

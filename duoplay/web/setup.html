@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#061113">
+<meta name="color-scheme" content="dark">
+<title>DuoPlay Setup</title>
+<link rel="apple-touch-icon" href="icons/icon-180.png">
+<style>
+:root { --ink: #061113; --text: #eaf5f3; --muted: #94b3b0; --accent: #1fb8cd; --accent-2: #20808d; --accent-ink: #032024;
+  --line: rgba(255,255,255,.13); --glass: rgba(255,255,255,.06); --danger: #ff6b6b; --ok: #3ddc97;
+  --font: -apple-system, "SF Pro Text", system-ui, sans-serif; color-scheme: dark; }
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body { margin: 0; min-height: 100%; background: var(--ink); color: var(--text); font: 16px/1.45 var(--font); -webkit-text-size-adjust: 100%; }
+body { background: radial-gradient(70% 40% at 10% 0%, rgba(31,184,205,.22), transparent 70%),
+  radial-gradient(60% 40% at 100% 100%, rgba(32,128,141,.25), transparent 70%), var(--ink); background-attachment: fixed; }
+main { max-width: 520px; margin: 0 auto; padding: calc(env(safe-area-inset-top, 0px) + 22px) 18px calc(env(safe-area-inset-bottom, 0px) + 28px); }
+.brand { display: flex; align-items: center; gap: 10px; font: 700 22px/1 -apple-system, "SF Pro Display", system-ui, sans-serif; }
+.mark { display: inline-flex; gap: 3px; padding: 5px 6px; border-radius: 9px; background: linear-gradient(140deg, var(--accent), var(--accent-2)); }
+.mark i { width: 7px; height: 16px; border-radius: 3px; background: var(--ink); display: block; }
+h1 { font-size: 26px; line-height: 1.15; margin: 22px 0 6px; letter-spacing: -.01em; }
+p { margin: 0 0 12px; color: var(--muted); }
+.note { border: 1px solid rgba(255,196,77,.35); background: rgba(255,196,77,.09); color: #ffe2a3; padding: 11px 13px; border-radius: 14px; margin: 14px 0; }
+.err { border-color: rgba(255,107,107,.4); background: rgba(255,107,107,.1); color: #ffc9c9; }
+.card { border: 1px solid var(--line); background: linear-gradient(180deg, rgba(255,255,255,.08), rgba(255,255,255,.03));
+  border-radius: 20px; overflow: hidden; margin: 16px 0; box-shadow: inset 0 1px 0 rgba(255,255,255,.14); }
+.label { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 22px 4px 8px; }
+.net { display: flex; align-items: center; gap: 12px; width: 100%; padding: 14px 16px; border: 0; border-top: 1px solid var(--line);
+  background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.net:first-child { border-top: 0; }
+.net .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.net.sel { background: rgba(31,184,205,.16); }
+.net .check { width: 18px; color: var(--accent); font-weight: 700; visibility: hidden; }
+.net.sel .check { visibility: visible; }
+.bars { display: inline-flex; align-items: flex-end; gap: 2px; height: 14px; }
+.bars i { width: 3px; border-radius: 1px; background: rgba(255,255,255,.25); display: block; }
+.bars i.on { background: var(--text); }
+.lock { width: 12px; height: 14px; opacity: .8; }
+.empty { padding: 16px; color: var(--muted); }
+.field { padding: 4px 16px 16px; }
+.field label { display: block; font-size: 14px; color: var(--muted); margin: 12px 0 6px; }
+.row { display: flex; gap: 8px; }
+input, select { width: 100%; font: inherit; color: var(--text); background: rgba(0,0,0,.28); border: 1px solid var(--line);
+  border-radius: 12px; padding: 12px 13px; outline: none; -webkit-appearance: none; appearance: none; }
+input:focus, select:focus { border-color: var(--accent); }
+select { background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%), linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+  background-position: calc(100% - 18px) 52%, calc(100% - 13px) 52%; background-size: 5px 5px; background-repeat: no-repeat; }
+.ghost { flex: none; border: 1px solid var(--line); background: rgba(255,255,255,.06); color: var(--text); border-radius: 12px; padding: 0 14px; font: inherit; }
+.primary { width: 100%; margin-top: 18px; border: 0; border-radius: 16px; padding: 15px; font: 600 17px/1 var(--font);
+  color: var(--accent-ink); background: linear-gradient(140deg, #5ad8e8, var(--accent)); box-shadow: 0 8px 24px rgba(31,184,205,.3); }
+.primary:disabled { opacity: .5; }
+.fine { font-size: 13px; color: var(--muted); margin-top: 18px; }
+.done { text-align: left; }
+.big-tick { width: 58px; height: 58px; border-radius: 50%; display: grid; place-items: center; margin-top: 26px;
+  background: rgba(61,220,151,.15); color: var(--ok); font-size: 30px; font-weight: 700; border: 1px solid rgba(61,220,151,.35); }
+.url { display: flex; align-items: center; gap: 10px; padding: 12px 12px 12px 16px; }
+.url code { flex: 1; font: 600 19px/1.2 ui-monospace, "SF Mono", Menlo, monospace; color: var(--text); -webkit-user-select: all; user-select: all; word-break: break-all; }
+ol { padding-left: 22px; color: var(--muted); margin: 0; }
+ol li { margin: 6px 0; }
+ol b { color: var(--text); font-weight: 600; }
+.led { display: grid; grid-template-columns: 18px 1fr; gap: 6px 10px; align-items: center; font-size: 14px; color: var(--muted); padding: 14px 16px; }
+.dot { width: 12px; height: 12px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 10px var(--ok); }
+.dot.slow { animation: blink 2s steps(1) infinite; }
+.dot.fast { animation: blink .25s steps(1) infinite; }
+@keyframes blink { 50% { opacity: .15; } }
+</style>
+</head>
+<body>
+<main>
+  <div class="brand"><span class="mark"><i></i><i></i></span>DuoPlay</div>
+
+  <section id="form-view">
+    <h1>Put your Pi on your Wi-Fi</h1>
+    <p>Pick the Wi-Fi your PS5 is on. Your Raspberry Pi joins it, and that's where you'll play from.</p>
+    <div id="message" class="note" hidden></div>
+
+    <div class="label">Networks the Pi can see</div>
+    <div class="card" id="list"><div class="empty">Looking…</div></div>
+
+    <div class="card" id="details" hidden>
+      <div class="field">
+        <div id="other-name" hidden>
+          <label for="ssid">Network name</label>
+          <input id="ssid" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" maxlength="32">
+        </div>
+        <div id="pw-row">
+          <label for="password">Password for <span id="pw-for">the network</span></label>
+          <div class="row">
+            <input id="password" type="password" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" maxlength="64">
+            <button class="ghost" id="show" type="button">Show</button>
+          </div>
+        </div>
+        <label for="country">Country</label>
+        <select id="country"></select>
+        <div id="error" class="note err" hidden></div>
+        <button class="primary" id="join" type="button">Join</button>
+      </div>
+    </div>
+    <p class="fine">The Pi Zero W only has 2.4 GHz Wi-Fi, so 5 GHz-only networks don't show up here. If your router uses one name for both, it's listed. The country sets which Wi-Fi channels are allowed.</p>
+  </section>
+
+  <section id="done-view" class="done" hidden>
+    <div class="big-tick">✓</div>
+    <h1>Joining <span id="done-name"></span></h1>
+    <p>The Pi is switching over now. This setup network will disappear and your iPhone will go back to your own Wi-Fi.</p>
+    <div class="label">Then, in Safari, open</div>
+    <div class="card url"><code id="url">http://duoplay.local:8080</code><button class="ghost" id="copy" type="button">Copy</button></div>
+    <ol>
+      <li>Give it about <b>30 seconds</b>, then open the address above in <b>Safari</b>.</li>
+      <li>Tap <b>Share</b> → <b>Add to Home Screen</b>, and open DuoPlay from your Home Screen.</li>
+    </ol>
+    <div class="label">The green light on the Pi</div>
+    <div class="card led">
+      <span class="dot"></span><span>On, steady: ready to play.</span>
+      <span class="dot fast"></span><span>Blinking fast: joining your Wi-Fi.</span>
+      <span class="dot slow"></span><span>Blinking slowly: it couldn't join. Connect to “DuoPlay Setup” again and check the password.</span>
+    </div>
+  </section>
+</main>
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const COUNTRIES = [['US','United States'],['CA','Canada'],['MX','Mexico'],['BR','Brazil'],['AR','Argentina'],['CL','Chile'],['CO','Colombia'],
+    ['GB','United Kingdom'],['IE','Ireland'],['FR','France'],['DE','Germany'],['NL','Netherlands'],['BE','Belgium'],['LU','Luxembourg'],
+    ['CH','Switzerland'],['AT','Austria'],['IT','Italy'],['ES','Spain'],['PT','Portugal'],['DK','Denmark'],['NO','Norway'],['SE','Sweden'],
+    ['FI','Finland'],['IS','Iceland'],['PL','Poland'],['CZ','Czechia'],['SK','Slovakia'],['HU','Hungary'],['RO','Romania'],['BG','Bulgaria'],
+    ['GR','Greece'],['HR','Croatia'],['SI','Slovenia'],['RS','Serbia'],['UA','Ukraine'],['TR','Türkiye'],['IL','Israel'],['AE','United Arab Emirates'],
+    ['SA','Saudi Arabia'],['QA','Qatar'],['EG','Egypt'],['ZA','South Africa'],['NG','Nigeria'],['KE','Kenya'],['IN','India'],['PK','Pakistan'],
+    ['SG','Singapore'],['MY','Malaysia'],['TH','Thailand'],['VN','Vietnam'],['PH','Philippines'],['ID','Indonesia'],['HK','Hong Kong'],
+    ['TW','Taiwan'],['KR','South Korea'],['JP','Japan'],['CN','China'],['AU','Australia'],['NZ','New Zealand']];
+  let networks = [], chosen = null, other = false, secure = true;
+
+  function bars(signal) {
+    const n = signal >= -55 ? 4 : signal >= -65 ? 3 : signal >= -75 ? 2 : 1;
+    return '<span class="bars" aria-label="signal ' + n + ' of 4">' + [5, 8, 11, 14].map((h, i) =>
+      '<i style="height:' + h + 'px" class="' + (i < n ? 'on' : '') + '"></i>').join('') + '</span>';
+  }
+  const LOCK = '<svg class="lock" viewBox="0 0 12 14" aria-label="needs a password"><rect x="1" y="6" width="10" height="8" rx="2" fill="currentColor"/>' +
+    '<path d="M3.5 6V4.5a2.5 2.5 0 0 1 5 0V6" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>';
+  const esc = (s) => s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+  function render() {
+    const list = $('list');
+    const rows = networks.map((n, i) => '<button class="net' + (chosen === i && !other ? ' sel' : '') + '" data-i="' + i + '" type="button">' +
+      '<span class="check">✓</span><span class="name">' + esc(n.ssid) + '</span>' + (n.secure ? LOCK : '') + bars(n.signal) + '</button>');
+    rows.push('<button class="net' + (other ? ' sel' : '') + '" data-i="other" type="button"><span class="check">✓</span><span class="name">Other network…</span></button>');
+    list.innerHTML = rows.join('');
+  }
+
+  function pick(i) {
+    other = i === 'other';
+    chosen = other ? null : Number(i);
+    secure = other ? true : networks[chosen].secure;
+    $('details').hidden = false;
+    $('other-name').hidden = !other;
+    $('pw-row').hidden = !secure;
+    $('pw-for').textContent = other ? 'the network' : '“' + networks[chosen].ssid + '”';
+    $('error').hidden = true;
+    render();
+    setTimeout(() => (other ? $('ssid') : secure ? $('password') : $('join')).focus(), 50);
+  }
+
+  $('list').addEventListener('click', (e) => { const b = e.target.closest('.net'); if (b) pick(b.dataset.i); });
+  $('show').addEventListener('click', () => {
+    const p = $('password'); p.type = p.type === 'password' ? 'text' : 'password'; $('show').textContent = p.type === 'password' ? 'Show' : 'Hide';
+  });
+
+  function fillCountries(preferred) {
+    const region = (navigator.language || '').split('-')[1];
+    const want = (preferred || region || 'US').toUpperCase();
+    const list = COUNTRIES.slice();
+    if (!list.some((c) => c[0] === want) && /^[A-Z]{2}$/.test(want)) list.unshift([want, want]);
+    $('country').innerHTML = list.map(([code, name]) => '<option value="' + code + '"' + (code === want ? ' selected' : '') + '>' + esc(name) + '</option>').join('');
+  }
+
+  async function join() {
+    const body = { country: $('country').value, password: secure ? $('password').value : '' };
+    let name;
+    if (other) { body.ssid = $('ssid').value; name = body.ssid; } else if (chosen !== null) { body.id = networks[chosen].id; name = networks[chosen].ssid; }
+    const err = $('error');
+    err.hidden = true;
+    if (!name) { err.textContent = 'Choose a network first.'; err.hidden = false; return; }
+    if (secure && body.password.length < 8) { err.textContent = 'Wi-Fi passwords are at least 8 characters.'; err.hidden = false; return; }
+    $('join').disabled = true; $('join').textContent = 'Saving…';
+    try {
+      const r = await fetch('/setup/join', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j.error || 'That didn’t work. Try again.');
+      $('done-name').textContent = '“' + name + '”';
+      $('form-view').hidden = true; $('done-view').hidden = false; window.scrollTo(0, 0);
+    } catch (e) {
+      err.textContent = e.message || 'That didn’t work. Try again.'; err.hidden = false;
+      $('join').disabled = false; $('join').textContent = 'Join';
+    }
+  }
+  $('join').addEventListener('click', join);
+  $('password').addEventListener('keydown', (e) => { if (e.key === 'Enter') join(); });
+
+  $('copy').addEventListener('click', () => {
+    const text = $('url').textContent;
+    const done = () => { $('copy').textContent = 'Copied'; setTimeout(() => ($('copy').textContent = 'Copy'), 1500); };
+    if (navigator.clipboard && window.isSecureContext) { navigator.clipboard.writeText(text).then(done, () => {}); return; }
+    const t = document.createElement('textarea'); t.value = text; t.setAttribute('readonly', ''); t.style.position = 'fixed'; t.style.opacity = '0';
+    document.body.appendChild(t); t.select(); t.setSelectionRange(0, text.length);
+    try { if (document.execCommand('copy')) done(); } catch (e) {}
+    t.remove();
+  });
+
+  fetch('/setup/networks').then((r) => r.json()).then((j) => {
+    networks = j.networks || [];
+    if (j.message) { $('message').textContent = j.message; $('message').hidden = false; }
+    fillCountries(j.country);
+    render();
+    if (!networks.length) $('list').insertAdjacentHTML('afterbegin', '<div class="empty">No networks found nearby. Use “Other network…” to type the name.</div>');
+  }).catch(() => { fillCountries(''); render(); });
+})();
+</script>
+</body>
+</html>

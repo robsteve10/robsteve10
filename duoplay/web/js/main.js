@@ -18,7 +18,7 @@ document.body.classList.add('mode-home');
 
 // ------------------------------------------------------------------ settings
 const DEFAULTS = {
-  picture: 'standard', height: 1080, fps: 60, bitrate: 0, latency: 1, adaptive: true, smooth: true,
+  picture: 'standard', fill: 'false', height: 1080, fps: 60, bitrate: 0, latency: 1, adaptive: true, smooth: true,
   haptics: true, hideWithPad: true, showStats: false,
   ctl: { cover: { scale: 1, opacity: 0.6 }, inner: { scale: 1, opacity: 0.55 } },
 };
@@ -82,8 +82,10 @@ function relayout() {
   updateScreenChip(d);
   if (stage.hidden) return;
   const prefs = settings.ctl[d.screen];
-  const l = computeLayout({ width: w, height: h, safe: safeArea(), videoAspect, userScale: prefs.scale, display: d });
+  const l = computeLayout({ width: w, height: h, safe: safeArea(), videoAspect, userScale: prefs.scale, display: d,
+    fill: String(settings.fill) === 'true' });
   const v = l.video;
+  if (video.style.objectFit !== l.fit) video.style.objectFit = l.fit;
   videoBox.style.transform = `translate3d(${v.x}px, ${v.y}px, 0)`;
   videoBox.style.width = `${v.w}px`;
   videoBox.style.height = `${v.h}px`;
@@ -382,6 +384,10 @@ function openSettings() {
       opt.disabled = true;
       opt.textContent = 'HDR: not available on this screen';
     }
+    const hint = bridgeHint(lastState?.device);
+    body.querySelector('#set-device-hint').textContent = hint;
+    body.querySelector('#set-device-hint').hidden = !hint;
+    body.querySelector('#set-log').hidden = bridgeless;
     for (const el of body.querySelectorAll('[data-set]')) {
       const key = el.dataset.set;
       const get = () => (key.startsWith('ctl') ? settings.ctl[screen][key === 'ctlScale' ? 'scale' : 'opacity'] : settings[key]);
@@ -392,7 +398,7 @@ function openSettings() {
         else if (key === 'ctlOpacity') settings.ctl[screen].opacity = val;
         else settings[key] = val;
         saveSettings();
-        if (key.startsWith('ctl')) relayout();
+        if (key.startsWith('ctl') || key === 'fill') relayout();
         if (key === 'haptics') setHapticsEnabled(val);
         if (key === 'showStats') $('hud').hidden = !val || stageKind !== 'stream';
         if (key === 'adaptive') conn?.sendControl({ t: 'settings', adaptive: !!val });
@@ -439,6 +445,7 @@ async function refreshState(discover = false) {
     const st = await api.get(`/api/state${discover ? '?discover=1' : ''}`);
     lastState = st;
     bridgeless = false;
+    tuneForBridge(st.device);
     renderHome(st);
     $('footer-note').textContent = `Bridge ${st.version} · ${st.secure ? 'secure connection' : 'not secure (HTTP)'}`;
   } catch {
@@ -447,6 +454,22 @@ async function refreshState(discover = false) {
     $('footer-note').textContent = PREVIEW ? 'Preview build' : 'Running without a bridge';
   }
   if (!bridgeless) stateTimer = setTimeout(() => refreshState(), 2000);
+}
+
+// A small bridge (a Raspberry Pi Zero W: one core, one 2.4 GHz radio carrying the picture
+// twice) streams best at 720p. Applied once, so a choice made in Settings afterwards sticks.
+function tuneForBridge(device) {
+  if (!device?.recommended_height || settings.deviceTuned === device.model) return;
+  if (Number(settings.height) > device.recommended_height) settings.height = String(device.recommended_height);
+  settings.deviceTuned = device.model;
+  saveSettings();
+}
+
+function bridgeHint(device) {
+  if (!device?.max_kbps) return '';
+  const name = (device.model || 'This bridge').replace(/ Rev [\d.]+$/, '');
+  return `${name}: streams best at ${device.recommended_height}p, up to ${Math.round(device.max_kbps / 1000)} Mbps. ` +
+    'Higher settings are capped to that.';
 }
 
 function renderHome(st) {
@@ -594,10 +617,10 @@ window.duoplay = { get layout() { return current; }, get stats() { return lastSt
 
 if (PREVIEW) {
   $('card-bridgeless').querySelector('p').textContent =
-    'This is a preview of DuoPlay. Safari can\'t open the kind of network connection a PS5 uses for Remote Play, so no web ' +
-    'page can reach the console by itself; the full app is served by the DuoPlay bridge at home, and that copy is the one ' +
-    'to add to the Home Screen. Here you can try the demo game, the controls on both screens, folding and the half-folded ' +
-    'handheld mode, haptics, and the HDR check.';
+    'This is a preview. Safari can\'t open the kind of network connection a PS5 uses, so the full app comes from a small ' +
+    'bridge at home, and that copy is the one for your Home Screen. A Raspberry Pi Zero W does the job, set up from this phone:';
+  $('card-bridgeless').querySelector('.hint').textContent =
+    'Here you can try the demo, the controls on both screens, folding, the half-folded handheld mode, haptics and the HDR check.';
 }
 
 // ------------------------------------------------------------------ launch

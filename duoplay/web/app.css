@@ -95,6 +95,8 @@ details summary { color: var(--muted); font-size: 14px; margin-top: 10px; }
 
 .row { display: flex; gap: 8px; margin-top: 8px; }
 .row input { flex: 1; min-width: 0; }
+.row.wrap { flex-wrap: wrap; margin: 12px 0 4px; }
+.row.wrap .btn { flex: 1 1 200px; text-decoration: none; }
 input, select { background: rgba(0, 0, 0, 0.28); border: 1px solid var(--glass-line); border-radius: 14px; padding: 11px 12px; outline: none; }
 input:focus, select:focus { border-color: var(--accent); }
 

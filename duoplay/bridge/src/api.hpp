@@ -2,6 +2,7 @@
 #pragma once
 
 #include "console.hpp"
+#include "device.hpp"
 #include "media.hpp"
 #include "peer.hpp"
 #include "store.hpp"
@@ -31,6 +32,8 @@ struct ApiContext {
 	bool tlsEnabled = false;
 	int httpPort = 0;
 	int httpsPort = 0;
+	DeviceProfile device;
+	std::string logFile; // shown at /api/log (the Raspberry Pi kit passes its log)
 };
 
 class Api {

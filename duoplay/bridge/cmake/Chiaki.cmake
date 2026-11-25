@@ -80,6 +80,12 @@ add_library(duo_chiaki STATIC
 	${_C}/remote/rudp.c ${_C}/remote/rudpsendbuffer.c
 	"${CMAKE_CURRENT_SOURCE_DIR}/src/chiaki_lan_only.c"
 	"${DUO_PB_DIR}/takion.pb.c")
+# musl (used by the static Raspberry Pi build) has no pthread_clockjoin_np. chiaki-ng
+# already carries a portable timed join for Android's libc, which lacks it too; use it.
+if(DUOPLAY_MUSL)
+	set_source_files_properties("${_C}/thread.c" PROPERTIES COMPILE_DEFINITIONS "__ANDROID__=1")
+endif()
+
 target_include_directories(duo_chiaki
 	PUBLIC "${chiaki_SOURCE_DIR}/lib/include" "${CMAKE_CURRENT_BINARY_DIR}/chiaki-config"
 	PRIVATE "${DUO_PB_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/src/shim")

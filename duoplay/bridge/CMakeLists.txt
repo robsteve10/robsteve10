@@ -24,6 +24,15 @@ add_subdirectory("${libdatachannel_SOURCE_DIR}" libdatachannel EXCLUDE_FROM_ALL)
 # --- cpp-httplib (HTTP/HTTPS server + PSN HTTPS client) -----------------------
 duo_fetch(httplib https://github.com/yhirose/cpp-httplib.git ${DUOPLAY_HTTPLIB_REF})
 
+# The web app, compiled in: the bridge then needs no files beside it.
+set(DUOPLAY_WEB_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../web")
+file(GLOB_RECURSE DUOPLAY_WEB_FILES CONFIGURE_DEPENDS "${DUOPLAY_WEB_DIR}/*")
+add_custom_command(
+	OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/embedded_web.cpp"
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/../scripts/embed-web.py" "${DUOPLAY_WEB_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/embedded_web.cpp"
+	DEPENDS ${DUOPLAY_WEB_FILES} "${CMAKE_CURRENT_SOURCE_DIR}/../scripts/embed-web.py"
+	COMMENT "Embedding the web app")
+
 add_executable(duoplay-bridge
 	src/main.cpp
 	src/util.cpp
@@ -37,8 +46,13 @@ add_executable(duoplay-bridge
 	src/api.cpp
 	src/tls.cpp
 	src/psn.cpp
-	src/fakesource.cpp)
+	src/fakesource.cpp
+	src/device.cpp
+	src/mdns.cpp
+	src/setup.cpp
+	"${CMAKE_CURRENT_BINARY_DIR}/embedded_web.cpp")
 target_include_directories(duoplay-bridge PRIVATE
+	"${CMAKE_CURRENT_SOURCE_DIR}/src"
 	"${httplib_SOURCE_DIR}"
 	"${libdatachannel_SOURCE_DIR}/deps/json/single_include")
 target_compile_definitions(duoplay-bridge PRIVATE
