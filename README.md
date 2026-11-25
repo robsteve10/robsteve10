@@ -97,3 +97,11 @@ use **Settings > Apps > Installed apps**.
 pip install numpy pillow
 python wallpapers/generate.py --w 2560 --h 1440       # any resolution, e.g. ultrawide 3440x1440
 ```
+
+---
+
+## Also in this repo: DuoPlay
+
+[`duoplay/`](duoplay/) is a separate project: PS5 Remote Play in the browser, built for a
+folding iPhone. It switches between the cover and inside screens without interrupting
+the stream and is tuned for Wi-Fi. See [duoplay/README.md](duoplay/README.md).

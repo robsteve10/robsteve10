@@ -1,0 +1,13 @@
+# Linux hosts (Raspberry Pi, NAS, home server). Host networking is what makes console
+# discovery, wake-up and WebRTC "just work"; no port mapping needed.
+services:
+  duoplay:
+    build: .
+    image: duoplay-bridge
+    container_name: duoplay
+    network_mode: host
+    restart: unless-stopped
+    volumes:
+      - ./data:/data
+    # Add options after the image's entrypoint, e.g. a different UDP port:
+    # command: ["--udp-port", "9600"]
