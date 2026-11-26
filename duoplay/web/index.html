@@ -88,12 +88,13 @@
       <section class="card glass note" id="card-bridgeless" hidden>
         <h3>Connecting to your PS5</h3>
         <p>Safari can't open the kind of network connection a PS5 uses, so DuoPlay reaches the console through a small bridge
-           at home. A Raspberry Pi Zero W does the job, and you can set it up from this phone:</p>
-        <ol>
-          <li>Download the SD-card kit, unzip it in Files and copy what's inside onto the Pi's microSD card.</li>
-          <li>Start the Pi. Join the <b>DuoPlay Setup</b> Wi-Fi and pick your home network on the page that opens.</li>
-          <li>Open <b>http://duoplay.local:8080</b> in Safari and add DuoPlay to your Home Screen from there.</li>
-        </ol>
+           at home, and the app you add to your Home Screen comes from there.</p>
+        <h4 class="sub">Surface RT, or a Pi running Raspberry Pi OS</h4>
+        <p>Run this once on it, in its terminal or from an SSH app. It sets everything up; on a Surface it also keeps it
+           awake and turns its screen off.</p>
+        <div class="cmd"><code id="install-cmd">curl -fsSL https://raw.githubusercontent.com/robsteve10/robsteve10/claude/festive-carson-vg2aw4/duoplay/pi/install.sh | sudo sh</code><button class="btn" id="copy-cmd" type="button">Copy</button></div>
+        <p>Then open <b>http://duoplay.local:8080</b> in Safari and add DuoPlay to your Home Screen from there.</p>
+        <h4 class="sub">Raspberry Pi Zero W with an empty card</h4>
         <div class="row wrap">
           <a class="btn primary" href="https://raw.githubusercontent.com/robsteve10/robsteve10/claude/festive-carson-vg2aw4/duoplay/pi/duoplay-pi-kit.zip" target="_blank" rel="noopener">Download the Pi kit (65 MB)</a>
           <a class="btn" href="https://github.com/robsteve10/robsteve10/blob/claude/festive-carson-vg2aw4/duoplay/README.md#raspberry-pi-zero-w-set-up-from-the-iphone" target="_blank" rel="noopener">Step-by-step guide</a>

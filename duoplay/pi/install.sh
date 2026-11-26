@@ -1,7 +1,8 @@
 #!/bin/sh
-# Installs the DuoPlay bridge on a Raspberry Pi that already runs Raspberry Pi OS (or another
-# Linux with systemd), as a service that starts whenever the Pi powers on. From an SSH app on
-# the iPhone, logged in to the Pi:
+# Installs the DuoPlay bridge on a Surface RT or Raspberry Pi running Raspberry Pi OS (or another
+# ARM Linux with systemd), as a service that starts with it. On a tablet such as the Surface RT
+# it also makes it a server: it never sleeps, and its screen goes off. In a terminal on the
+# device, or from an SSH app on the iPhone:
 #
 #   curl -fsSL https://raw.githubusercontent.com/robsteve10/robsteve10/claude/festive-carson-vg2aw4/duoplay/pi/install.sh | sudo sh
 #
@@ -13,7 +14,7 @@ BASE=${DUOPLAY_BASE:-https://raw.githubusercontent.com/robsteve10/robsteve10/cla
 case "$(uname -m)" in
 armv6l | armv7l | armv8l | aarch64) ;;
 *)
-	echo "This is for a Raspberry Pi. This computer is $(uname -m)." >&2
+	echo "This is for ARM devices such as a Raspberry Pi or Surface RT. This computer is $(uname -m)." >&2
 	exit 1
 	;;
 esac

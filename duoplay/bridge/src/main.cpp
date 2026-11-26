@@ -55,7 +55,10 @@ void usage() {
 	        "  --data-dir DIR       where pairing data and certificates live (default %s)\n"
 	        "  --web-dir DIR        serve the web app from this folder instead of the built-in copy\n"
 	        "  --mdns-name NAME     answer NAME.local on the network (default duoplay; \"\" turns it off)\n"
-	        "  --install            set DuoPlay up to start at boot (Linux with systemd, run with sudo)\n"
+	        "  --install            set DuoPlay up to start at boot (Linux with systemd, run with sudo);\n"
+	        "                       on a tablet such as a Surface RT it also keeps it awake, screen off\n"
+	        "  --screen on|off      switch a built-in screen on or off now (sudo)\n"
+	        "  --keep-screen-off    keep built-in screens off while running (a tablet used as a server)\n"
 	        "  --uninstall          remove that again\n"
 	        "  --test-pattern FILE  offer a looping H.264 test stream as a fake console\n"
 	        "  --verbose            debug logging\n\n"
@@ -106,6 +109,7 @@ int main(int argc, char **argv) {
 	bool setupPortal = false;
 	SetupPortalOptions setup;
 	std::string wifiTxt, logFile;
+	bool screenOff = false;
 
 	for (int i = 1; i < argc; i++) {
 		std::string a = argv[i];
@@ -134,6 +138,17 @@ int main(int argc, char **argv) {
 			testPattern = next();
 		else if (a == "--mdns-name")
 			mdnsName = next();
+		else if (a == "--screen") {
+			std::string v = next();
+			if (v != "on" && v != "off") {
+				fprintf(stderr, "--screen wants on or off\n");
+				return 2;
+			}
+			int n = setScreen(v == "on");
+			printf(n ? "Screen %s.\n" : "No built-in screen found (or not allowed: run it with sudo).\n", v.c_str());
+			return n ? 0 : 1;
+		} else if (a == "--keep-screen-off")
+			screenOff = true;
 		else if (a == "--wifi-txt")
 			wifiTxt = next();
 		else if (a == "--log-file")
@@ -274,6 +289,10 @@ int main(int argc, char **argv) {
 	std::thread httpThread([&] { http.listen_after_bind(); });
 	MdnsResponder mdns({mdnsName});
 	mdns.start();
+	std::atomic<bool> screenKeeperRunning{screenOff};
+	std::thread screenKeeper;
+	if (screenOff)
+		screenKeeper = std::thread([&] { keepScreenOff(screenKeeperRunning); });
 	std::thread httpsThread;
 	if (https)
 		httpsThread = std::thread([&] { https->listen_after_bind(); });
@@ -297,6 +316,9 @@ int main(int argc, char **argv) {
 	while (!g_quit)
 		std::this_thread::sleep_for(std::chrono::milliseconds(200));
 	LOGI("main", "Shutting down");
+	screenKeeperRunning = false;
+	if (screenKeeper.joinable())
+		screenKeeper.join();
 	mdns.stop();
 	http.stop();
 	if (https)

@@ -136,6 +136,34 @@ What helps most:
 3. Start with **1080p / 60 fps / Auto**, **Balanced**. If the dot stays amber or red, try
    720p, then **Smooth**.
 
+## Surface RT as the bridge
+
+A Surface RT running Raspberry Pi OS makes a good bridge: four cores, and wired to the router
+with a USB Ethernet adapter. One command sets it up. Type it in a terminal on the Surface, or
+paste it into an SSH app on the iPhone:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/robsteve10/robsteve10/claude/festive-carson-vg2aw4/duoplay/pi/install.sh | sudo sh
+```
+
+It installs DuoPlay as a service that starts with the Surface, and makes the Surface a server:
+- **It never sleeps**, even with the cover closed.
+- **Its screen goes off** a moment later, and stays off. If something wakes it, it goes dark
+  again within a minute.
+- **It prints the address** to open on the iPhone: **http://duoplay.local:8080**.
+
+Then, on the iPhone, open that address in Safari, tap **Share → Add to Home Screen**, and open
+DuoPlay from the Home Screen. Opened that way it fills the whole screen. The grey bars are
+only in the Claude app's preview, which draws its own frame around the page. Carry on from
+step 4 of [On the iPhone Duo](#2-on-the-iphone-duo).
+
+| To | Run on the Surface |
+| --- | --- |
+| Turn the screen back on | `sudo duoplay-bridge --screen on` (off again: `--screen off`; a restart also turns it off) |
+| Undo everything | `sudo duoplay-bridge --uninstall` |
+
+Keep the Surface plugged in.
+
 ## Raspberry Pi Zero W, set up from the iPhone
 
 The whole setup works from the Duo itself, no computer needed. You need the Pi, its power
@@ -211,7 +239,8 @@ prints the address to open: **http://duoplay.local:8080**.
 
 ### 1. The bridge
 
-On a Raspberry Pi Zero W, use [the kit or the installer above](#raspberry-pi-zero-w-set-up-from-the-iphone).
+On a Surface RT, use [the one command above](#surface-rt-as-the-bridge). On a Raspberry Pi Zero W,
+use [the kit or the installer](#raspberry-pi-zero-w-set-up-from-the-iphone).
 On another Raspberry Pi, Linux machine or Mac on the same network as the PS5:
 
 ```sh

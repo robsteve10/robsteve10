@@ -609,6 +609,17 @@ async function savePsn(payload) {
   try { await api.post('/api/psn/account', payload, 30000); toast('Account linked.'); refreshState(true); }
   catch (e) { err.textContent = e.message; err.hidden = false; }
 }
+$('copy-cmd').onclick = () => {
+  const text = $('install-cmd').textContent;
+  const done = () => { $('copy-cmd').textContent = 'Copied'; setTimeout(() => ($('copy-cmd').textContent = 'Copy'), 1500); };
+  if (navigator.clipboard && window.isSecureContext) { navigator.clipboard.writeText(text).then(done, () => {}); return; }
+  const t = document.createElement('textarea');
+  t.value = text; t.setAttribute('readonly', ''); t.style.position = 'fixed'; t.style.opacity = '0';
+  document.body.appendChild(t); t.select(); t.setSelectionRange(0, text.length);
+  try { if (document.execCommand('copy')) done(); } catch { /* select it by hand */ }
+  t.remove();
+};
+
 $('psn-save').onclick = () => savePsn({ redirect_url: $('psn-redirect').value.trim() });
 $('psn-id-save').onclick = () => savePsn({ account_id: $('psn-id').value.trim() });
 
@@ -617,8 +628,8 @@ window.duoplay = { get layout() { return current; }, get stats() { return lastSt
 
 if (PREVIEW) {
   $('card-bridgeless').querySelector('p').textContent =
-    'This is a preview. Safari can\'t open the kind of network connection a PS5 uses, so the full app comes from a small ' +
-    'bridge at home, and that copy is the one for your Home Screen. A Raspberry Pi Zero W does the job, set up from this phone:';
+    'This is a preview, shown inside the Claude app: the grey bars at the sides are its frame, not DuoPlay. The real app ' +
+    'comes from a small bridge at home; added to your Home Screen from there, it fills the whole screen.';
   $('card-bridgeless').querySelector('.hint').textContent =
     'Here you can try the demo, the controls on both screens, folding, the half-folded handheld mode, haptics and the HDR check.';
 }
